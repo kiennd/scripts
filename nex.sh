@@ -37,28 +37,28 @@ print_status() {
 parse_node_config() {
     local node_config="$1"
     
-    # Expected format: node_id:host:port:user:pass:max_threads
-    IFS=':' read -r node_id proxy_host proxy_port proxy_user proxy_pass max_threads <<< "$node_config"
+    # Expected format: node_id:host:port:user:pass
+    IFS=':' read -r node_id proxy_host proxy_port proxy_user proxy_pass <<< "$node_config"
     
     # Validate required fields
-    if [[ -z "$node_id" || -z "$proxy_host" || -z "$proxy_port" || -z "$proxy_user" || -z "$proxy_pass" || -z "$max_threads" ]]; then
+    if [[ -z "$node_id" || -z "$proxy_host" || -z "$proxy_port" || -z "$proxy_user" || -z "$proxy_pass" ]]; then
         print_status $RED "Invalid node configuration: $node_config"
-        print_status $YELLOW "Expected format: node_id:host:port:user:pass:max_threads"
-        print_status $YELLOW "Example: 9000180:proxy1.com:8080:user1:pass1:100"
+        print_status $YELLOW "Expected format: node_id:host:port:user:pass"
+        print_status $YELLOW "Example: 9000180:proxy1.com:8080:user1:pass1"
         return 1
     fi
     
     # Validate numeric fields
-    if ! [[ "$node_id" =~ ^[0-9]+$ ]] || ! [[ "$proxy_port" =~ ^[0-9]+$ ]] || ! [[ "$max_threads" =~ ^[0-9]+$ ]]; then
+    if ! [[ "$node_id" =~ ^[0-9]+$ ]] || ! [[ "$proxy_port" =~ ^[0-9]+$ ]]; then
         print_status $RED "Invalid numeric values in: $node_config"
-        print_status $YELLOW "node_id, proxy_port, and max_threads must be numbers"
+        print_status $YELLOW "node_id and proxy_port must be numbers"
         return 1
     fi
     
     # Construct proxy URL with authentication
     local proxy_url="http://${proxy_user}:${proxy_pass}@${proxy_host}:${proxy_port}"
     
-    echo "$node_id|$proxy_url|$max_threads"
+    echo "$node_id|$proxy_url"
 }
 
 # Function to load nodes from command line arguments
@@ -72,8 +72,8 @@ load_nodes_from_args() {
     if [[ "$command" == "start" || "$command" == "restart" ]]; then
         if [ $# -eq 0 ]; then
             print_status $RED "No node configurations provided!"
-            print_status $YELLOW "Usage: $0 start \"node_id:host:port:user:pass:max_threads\" [...]"
-            print_status $YELLOW "Example: $0 start \"9000180:proxy1.com:8080:user1:pass1:100\" \"9000181:proxy2.com:8080:user2:pass2:100\""
+            print_status $YELLOW "Usage: $0 start \"node_id:host:port:user:pass\" [...]"
+            print_status $YELLOW "Example: $0 start \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\""
             exit 1
         fi
         
@@ -82,8 +82,8 @@ load_nodes_from_args() {
         for node_config in "$@"; do
             if parsed_config=$(parse_node_config "$node_config"); then
                 NODES+=("$parsed_config")
-                IFS='|' read -r node_id proxy_url max_threads <<< "$parsed_config"
-                print_status $GREEN "✓ Parsed node $node_id with proxy $(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|') and $max_threads threads"
+                IFS='|' read -r node_id proxy_url <<< "$parsed_config"
+                print_status $GREEN "✓ Parsed node $node_id with proxy $(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')"
             else
                 exit 1
             fi
@@ -113,11 +113,10 @@ load_nodes_from_containers() {
         local node_id=$(echo "$container" | sed 's/nexus-node-//')
         
         # Get environment variables from container
-        local proxy_url=$(docker inspect "$container" --format='{{range .Config.Env}}{{if eq (index (split . "=") 0) "HTTP_PROXY"}}{{index (split . "=") 1}}{{end}}{{end}}' 2>/dev/null || echo "unknown")
-        local max_threads=$(docker inspect "$container" --format='{{range .Config.Env}}{{if eq (index (split . "=") 0) "MAX_THREADS"}}{{index (split . "=") 1}}{{end}}{{end}}' 2>/dev/null || echo "100")
+        local proxy_url=$(docker inspect "$container" --format='{{range .Config.Env}}{{if eq (index (split . "=") 0) "PROXY_URL"}}{{index (split . "=") 1}}{{end}}{{end}}' 2>/dev/null || echo "unknown")
         
         if [[ "$node_id" =~ ^[0-9]+$ ]]; then
-            NODES+=("$node_id|$proxy_url|$max_threads")
+            NODES+=("$node_id|$proxy_url")
         fi
     done
     
@@ -304,7 +303,6 @@ EOF
 start_node_docker() {
     local node_id=$1
     local proxy_url=$2
-    local max_threads=$3
     
     local container_name="nexus-node-${node_id}"
     local log_file="${LOG_DIR}/node_${node_id}.log"
@@ -315,7 +313,6 @@ start_node_docker() {
     print_status $BLUE "Starting node $node_id in isolated Docker container..."
     print_status $CYAN "  Node ID: $node_id"
     print_status $CYAN "  Proxy: $proxy_display"
-    print_status $CYAN "  Max Threads: $max_threads"
     print_status $CYAN "  Container: $container_name"
     
     # Stop and remove existing container if running
@@ -326,7 +323,6 @@ start_node_docker() {
     docker run -d \
         --name "$container_name" \
         --env NODE_ID="$node_id" \
-        --env MAX_THREADS="$max_threads" \
         --env PROXY_URL="$proxy_url" \
         --restart unless-stopped \
         --log-driver json-file \
@@ -452,7 +448,7 @@ stop_node() {
 start_all_nodes() {
     if [ ${#NODES[@]} -eq 0 ]; then
         print_status $RED "No nodes configured!"
-        print_status $YELLOW "Usage: $0 start \"node_id:host:port:user:pass:max_threads\" [...]"
+        print_status $YELLOW "Usage: $0 start \"node_id:host:port:user:pass\" [...]"
         exit 1
     fi
     
@@ -468,8 +464,8 @@ start_all_nodes() {
     
     # Start each node
     for node_config in "${NODES[@]}"; do
-        IFS='|' read -r node_id proxy_url max_threads <<< "$node_config"
-        start_node_docker "$node_id" "$proxy_url" "$max_threads"
+        IFS='|' read -r node_id proxy_url <<< "$node_config"
+        start_node_docker "$node_id" "$proxy_url"
         sleep 3  # Small delay between starts
     done
     
@@ -490,7 +486,7 @@ stop_all_nodes() {
     print_status $BLUE "Stopping all Nexus nodes..."
     
     for node_config in "${NODES[@]}"; do
-        IFS='|' read -r node_id proxy_url max_threads <<< "$node_config"
+        IFS='|' read -r node_id proxy_url <<< "$node_config"
         stop_node "$node_id"
     done
     
@@ -518,7 +514,7 @@ show_status() {
     echo "------------------------------------------------------------------------------"
     
     for node_config in "${NODES[@]}"; do
-        IFS='|' read -r node_id proxy_url max_threads <<< "$node_config"
+        IFS='|' read -r node_id proxy_url <<< "$node_config"
         local container_name="nexus-node-${node_id}"
         
         # Hide credentials in proxy display
@@ -549,7 +545,7 @@ show_logs() {
         print_status $BLUE "Showing logs for all nodes (Ctrl+C to exit)..."
         
         for node_config in "${NODES[@]}"; do
-            IFS='|' read -r nid proxy_url max_threads <<< "$node_config"
+            IFS='|' read -r nid proxy_url <<< "$node_config"
             local container_name="nexus-node-${nid}"
             if docker ps | grep -q "$container_name"; then
                 echo "=== Node $nid ==="
@@ -578,7 +574,7 @@ test_proxies() {
     print_status $BLUE "Testing proxy connectivity..."
     
     for node_config in "${NODES[@]}"; do
-        IFS='|' read -r node_id proxy_url max_threads <<< "$node_config"
+        IFS='|' read -r node_id proxy_url <<< "$node_config"
         
         local proxy_display=$(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')
         print_status $BLUE "Testing proxy for node $node_id: $proxy_display"
@@ -639,17 +635,17 @@ Commands:
   help                - Show this help message
 
 Node Configuration Format:
-  node_id:host:port:user:pass:max_threads
+  node_id:host:port:user:pass
 
 Examples:
   # Start single node
-  sudo $0 start "9000180:proxy1.com:8080:user1:pass1:100"
+  sudo $0 start "9000180:proxy1.com:8080:user1:pass1"
   
   # Start multiple nodes
   sudo $0 start \\
-    "9000180:proxy1.com:8080:user1:pass1:100" \\
-    "9000181:proxy2.com:8080:user2:pass2:100" \\
-    "9000182:proxy3.com:8080:user3:pass3:100"
+    "9000180:proxy1.com:8080:user1:pass1" \\
+    "9000181:proxy2.com:8080:user2:pass2" \\
+    "9000182:proxy3.com:8080:user3:pass3"
   
   # Check status and logs
   sudo $0 status
