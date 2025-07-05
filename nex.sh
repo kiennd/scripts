@@ -58,7 +58,7 @@ parse_node_config() {
     # Construct proxy URL with authentication
     local proxy_url="http://${proxy_user}:${proxy_pass}@${proxy_host}:${proxy_port}"
     
-    echo "$node_id:$proxy_url:$max_threads"
+    echo "$node_id|$proxy_url|$max_threads"
 }
 
 # Function to load nodes from command line arguments
@@ -82,7 +82,7 @@ load_nodes_from_args() {
         for node_config in "$@"; do
             if parsed_config=$(parse_node_config "$node_config"); then
                 NODES+=("$parsed_config")
-                IFS=':' read -r node_id proxy_url max_threads <<< "$parsed_config"
+                IFS='|' read -r node_id proxy_url max_threads <<< "$parsed_config"
                 print_status $GREEN "✓ Parsed node $node_id with proxy $(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|') and $max_threads threads"
             else
                 exit 1
@@ -117,7 +117,7 @@ load_nodes_from_containers() {
         local max_threads=$(docker inspect "$container" --format='{{range .Config.Env}}{{if eq (index (split . "=") 0) "MAX_THREADS"}}{{index (split . "=") 1}}{{end}}{{end}}' 2>/dev/null || echo "100")
         
         if [[ "$node_id" =~ ^[0-9]+$ ]]; then
-            NODES+=("$node_id:$proxy_url:$max_threads")
+            NODES+=("$node_id|$proxy_url|$max_threads")
         fi
     done
     
@@ -324,19 +324,16 @@ start_node_docker() {
     # Start node in Docker with complete isolation
     docker run -d \
         --name "$container_name" \
-        --env HTTP_PROXY="$proxy_url" \
-        --env HTTPS_PROXY="$proxy_url" \
-        --env http_proxy="$proxy_url" \
-        --env https_proxy="$proxy_url" \
         --env NODE_ID="$node_id" \
         --env MAX_THREADS="$max_threads" \
+        --env PROXY_URL="$proxy_url" \
         --restart unless-stopped \
         --log-driver json-file \
         --log-opt max-size=100m \
         --log-opt max-file=3 \
         nexus-node:latest \
         bash -c "
-            # Ensure Nexus CLI is available
+            # Ensure Nexus CLI is available (without proxy first)
             source ~/.bashrc 2>/dev/null || true
             
             # Add nexus to PATH if not available
@@ -344,17 +341,25 @@ start_node_docker() {
                 export PATH=\"/root/.nexus:\$PATH\"
             fi
             
-            # Verify nexus-network is available
+            # Verify nexus-network is available and reinstall if needed
             if ! command -v nexus-network &> /dev/null; then
                 echo 'Error: nexus-network not found, reinstalling...'
+                # Install without proxy
+                unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
                 curl https://cli.nexus.xyz/ | sh
-                source ~/.bashrc
+                source ~/.bashrc 2>/dev/null || true
                 export PATH=\"/root/.nexus:\$PATH\"
             fi
             
+            # Now set proxy for Nexus network operations
+            export HTTP_PROXY=\"\$PROXY_URL\"
+            export HTTPS_PROXY=\"\$PROXY_URL\"
+            export http_proxy=\"\$PROXY_URL\"
+            export https_proxy=\"\$PROXY_URL\"
+            
             # Display environment info (hide credentials)
             echo \"Starting Nexus node \$NODE_ID\"
-            echo \"Proxy: \$(echo \$HTTP_PROXY | sed 's|://[^@]*@|://***:***@|')\"
+            echo \"Proxy: \$(echo \$PROXY_URL | sed 's|://[^@]*@|://***:***@|')\"
             echo \"Max threads: \$MAX_THREADS\"
             echo \"Nexus version: \$(nexus-network --version 2>/dev/null || echo 'unknown')\"
             
@@ -416,7 +421,7 @@ start_all_nodes() {
     
     # Start each node
     for node_config in "${NODES[@]}"; do
-        IFS=':' read -r node_id proxy_url max_threads <<< "$node_config"
+        IFS='|' read -r node_id proxy_url max_threads <<< "$node_config"
         start_node_docker "$node_id" "$proxy_url" "$max_threads"
         sleep 3  # Small delay between starts
     done
@@ -438,7 +443,7 @@ stop_all_nodes() {
     print_status $BLUE "Stopping all Nexus nodes..."
     
     for node_config in "${NODES[@]}"; do
-        IFS=':' read -r node_id proxy_url max_threads <<< "$node_config"
+        IFS='|' read -r node_id proxy_url max_threads <<< "$node_config"
         stop_node "$node_id"
     done
     
@@ -466,7 +471,7 @@ show_status() {
     echo "------------------------------------------------------------------------------"
     
     for node_config in "${NODES[@]}"; do
-        IFS=':' read -r node_id proxy_url max_threads <<< "$node_config"
+        IFS='|' read -r node_id proxy_url max_threads <<< "$node_config"
         local container_name="nexus-node-${node_id}"
         
         # Hide credentials in proxy display
@@ -497,7 +502,7 @@ show_logs() {
         print_status $BLUE "Showing logs for all nodes (Ctrl+C to exit)..."
         
         for node_config in "${NODES[@]}"; do
-            IFS=':' read -r nid proxy_url max_threads <<< "$node_config"
+            IFS='|' read -r nid proxy_url max_threads <<< "$node_config"
             local container_name="nexus-node-${nid}"
             if docker ps | grep -q "$container_name"; then
                 echo "=== Node $nid ==="
@@ -526,7 +531,7 @@ test_proxies() {
     print_status $BLUE "Testing proxy connectivity..."
     
     for node_config in "${NODES[@]}"; do
-        IFS=':' read -r node_id proxy_url max_threads <<< "$node_config"
+        IFS='|' read -r node_id proxy_url max_threads <<< "$node_config"
         
         local proxy_display=$(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')
         print_status $BLUE "Testing proxy for node $node_id: $proxy_display"
