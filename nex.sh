@@ -255,10 +255,10 @@ install_docker() {
 create_nexus_image() {
     local image_name="nexus-node:latest"
     
-    # Check if image already exists
+    # Check if image already exists and remove it to ensure fresh installation
     if docker images | grep -q "nexus-node"; then
-        print_status $GREEN "Nexus Docker image already exists"
-        return 0
+        print_status $YELLOW "Removing existing Nexus Docker image to ensure fresh installation..."
+        docker rmi nexus-node:latest 2>/dev/null || true
     fi
     
     print_status $BLUE "Creating Nexus Docker image..."
@@ -272,13 +272,14 @@ RUN apt-get update && apt-get install -y \
     curl \
     bash \
     ca-certificates \
+    wget \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Nexus CLI
-RUN curl https://cli.nexus.xyz/ | sh
-
-# Source bashrc in shell initialization
-RUN echo 'source ~/.bashrc' >> ~/.profile
+# Install Nexus CLI properly
+RUN curl -fsSL https://cli.nexus.xyz/ | bash \
+    && echo 'export PATH="/root/.nexus:$PATH"' >> ~/.bashrc \
+    && echo 'source ~/.bashrc' >> ~/.profile
 
 # Make nexus-network available in PATH
 ENV PATH="/root/.nexus:$PATH"
@@ -287,7 +288,7 @@ ENV PATH="/root/.nexus:$PATH"
 WORKDIR /app
 
 # Default command
-CMD ["bash"]
+CMD ["bash", "-l"]
 EOF
     
     # Build the image
@@ -332,23 +333,36 @@ start_node_docker() {
         --log-opt max-size=100m \
         --log-opt max-file=3 \
         nexus-node:latest \
-        bash -c "
-            # Ensure Nexus CLI is available (without proxy first)
+        bash -l -c "
+            # Ensure PATH includes Nexus CLI
+            export PATH=\"/root/.nexus:\$PATH\"
+            
+            # Source bashrc to get environment
             source ~/.bashrc 2>/dev/null || true
             
-            # Add nexus to PATH if not available
+            # Check if nexus-network is available
             if ! command -v nexus-network &> /dev/null; then
-                export PATH=\"/root/.nexus:\$PATH\"
-            fi
-            
-            # Verify nexus-network is available and reinstall if needed
-            if ! command -v nexus-network &> /dev/null; then
-                echo 'Error: nexus-network not found, reinstalling...'
-                # Install without proxy
+                echo 'Error: nexus-network not found, installing...'
+                
+                # Clear any proxy settings for installation
                 unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
-                curl https://cli.nexus.xyz/ | sh
-                source ~/.bashrc 2>/dev/null || true
-                export PATH=\"/root/.nexus:\$PATH\"
+                
+                # Install Nexus CLI
+                if curl -fsSL https://cli.nexus.xyz/ | bash; then
+                    echo 'Nexus CLI installed successfully'
+                    source ~/.bashrc 2>/dev/null || true
+                    export PATH=\"/root/.nexus:\$PATH\"
+                else
+                    echo 'Failed to install Nexus CLI'
+                    exit 1
+                fi
+                
+                # Verify installation
+                if ! command -v nexus-network &> /dev/null; then
+                    echo 'Nexus CLI installation verification failed'
+                    ls -la /root/.nexus/ 2>/dev/null || echo 'No .nexus directory found'
+                    exit 1
+                fi
             fi
             
             # Now set proxy for Nexus network operations
@@ -361,6 +375,7 @@ start_node_docker() {
             echo \"Starting Nexus node \$NODE_ID\"
             echo \"Proxy: \$(echo \$PROXY_URL | sed 's|://[^@]*@|://***:***@|')\"
             echo \"Max threads: \$MAX_THREADS\"
+            echo \"Nexus CLI path: \$(which nexus-network 2>/dev/null || echo 'not found')\"
             echo \"Nexus version: \$(nexus-network --version 2>/dev/null || echo 'unknown')\"
             
             # Start the node
