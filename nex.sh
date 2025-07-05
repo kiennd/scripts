@@ -145,6 +145,13 @@ install_docker() {
         # Start Docker service if not running
         if ! systemctl is-active --quiet docker; then
             print_status $BLUE "Starting Docker service..."
+            
+            # Check if Docker service is masked and unmask it if needed
+            if systemctl is-masked docker; then
+                print_status $YELLOW "Docker service is masked, unmasking it..."
+                systemctl unmask docker
+            fi
+            
             systemctl start docker
             systemctl enable docker
         fi
@@ -216,6 +223,12 @@ install_docker() {
     esac
     
     # Start and enable Docker
+    # Check if Docker service is masked and unmask it if needed
+    if systemctl is-masked docker; then
+        print_status $YELLOW "Docker service is masked, unmasking it..."
+        systemctl unmask docker
+    fi
+    
     systemctl start docker
     systemctl enable docker
     
