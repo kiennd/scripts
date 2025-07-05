@@ -306,21 +306,30 @@ start_all_nodes() {
 
 # Function to show logs of all containers
 show_all_logs() {
-    print_status $BLUE "Showing logs for all running containers..."
+    print_status $BLUE "Showing initial logs for all running containers..."
     
     for node_config in "${NODES[@]}"; do
         IFS='|' read -r node_id proxy_url <<< "$node_config"
         local container_name="nexus-node-${node_id}"
         
         if docker ps | grep -q "$container_name"; then
-            print_status $CYAN "=== Logs for Node $node_id ==="
-            docker logs --tail=20 "$container_name" 2>/dev/null || echo "No logs available"
+            print_status $CYAN "=== Initial logs for Node $node_id ==="
+            docker logs --tail=10 "$container_name" 2>/dev/null || echo "No logs available"
             echo ""
         fi
     done
     
-    print_status $BLUE "To follow live logs for a specific node, use:"
-    print_status $YELLOW "docker logs -f nexus-node-<NODE_ID>"
+    # Follow live logs for the first container
+    if [ ${#NODES[@]} -gt 0 ]; then
+        IFS='|' read -r first_node_id proxy_url <<< "${NODES[0]}"
+        local first_container="nexus-node-${first_node_id}"
+        
+        if docker ps | grep -q "$first_container"; then
+            print_status $GREEN "Following live logs for Node $first_node_id (Press Ctrl+C to exit)..."
+            echo "=================================================================="
+            docker logs -f "$first_container"
+        fi
+    fi
 }
 
 # Main execution
