@@ -359,10 +359,24 @@ start_node_docker() {
                     exit 1
                 fi
                 
-                # Verify installation
-                if ! command -v nexus-network &> /dev/null; then
-                    echo 'Nexus CLI installation verification failed'
-                    ls -la /root/.nexus/bin/ 2>/dev/null || echo 'No .nexus/bin directory found'
+                # Verify installation - check multiple possible locations
+                echo 'Checking Nexus CLI installation...'
+                ls -la /root/.nexus/ 2>/dev/null || echo 'No .nexus directory found'
+                ls -la /root/.nexus/bin/ 2>/dev/null || echo 'No .nexus/bin directory found'
+                
+                # Try to find nexus-network in various locations
+                if command -v nexus-network &> /dev/null; then
+                    echo 'nexus-network found in PATH'
+                elif [ -f /root/.nexus/bin/nexus-network ]; then
+                    echo 'nexus-network found in /root/.nexus/bin/'
+                    export PATH=\"/root/.nexus/bin:\$PATH\"
+                elif [ -f /root/.nexus/nexus-network ]; then
+                    echo 'nexus-network found in /root/.nexus/'
+                    export PATH=\"/root/.nexus:\$PATH\"
+                else
+                    echo 'Searching for nexus-network...'
+                    find /root/.nexus -name '*nexus*' -type f 2>/dev/null || echo 'No nexus files found'
+                    echo 'Installation verification failed - nexus-network not found'
                     exit 1
                 fi
             fi
@@ -373,14 +387,31 @@ start_node_docker() {
             export http_proxy=\"\$PROXY_URL\"
             export https_proxy=\"\$PROXY_URL\"
             
+            # Final verification and path setup
+            echo \"Final PATH: \$PATH\"
+            echo \"Checking for nexus-network...\"
+            
+            # Try different possible locations for nexus-network
+            if command -v nexus-network &> /dev/null; then
+                NEXUS_CMD=\"nexus-network\"
+            elif [ -f /root/.nexus/bin/nexus-network ]; then
+                NEXUS_CMD=\"/root/.nexus/bin/nexus-network\"
+            elif [ -f /root/.nexus/nexus-network ]; then
+                NEXUS_CMD=\"/root/.nexus/nexus-network\"
+            else
+                echo \"ERROR: Cannot find nexus-network command\"
+                find /root -name '*nexus*' -type f 2>/dev/null | head -10
+                exit 1
+            fi
+            
             # Display environment info (hide credentials)
             echo \"Starting Nexus node \$NODE_ID\"
             echo \"Proxy: \$(echo \$PROXY_URL | sed 's|://[^@]*@|://***:***@|')\"
-            echo \"Nexus CLI path: \$(which nexus-network 2>/dev/null || echo 'not found')\"
-            echo \"Nexus version: \$(nexus-network --version 2>/dev/null || echo 'unknown')\"
+            echo \"Nexus command: \$NEXUS_CMD\"
+            echo \"Nexus version: \$(\$NEXUS_CMD --version 2>/dev/null || echo 'unknown')\"
             
             # Start the node with nexus-network command (no registration needed)
-            exec nexus-network start --node-id \"\$NODE_ID\" --headless
+            exec \$NEXUS_CMD start --node-id \"\$NODE_ID\" --headless
         " &
     
     # Wait a moment for container to start
