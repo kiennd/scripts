@@ -281,8 +281,8 @@ RUN curl -fsSL https://cli.nexus.xyz/ | bash \
     && echo 'export PATH="/root/.nexus:$PATH"' >> ~/.bashrc \
     && echo 'source ~/.bashrc' >> ~/.profile
 
-# Make nexus-network available in PATH
-ENV PATH="/root/.nexus:$PATH"
+# Make nexus-network available in PATH  
+ENV PATH="/root/.nexus/bin:/root/.nexus:$PATH"
 
 # Set working directory
 WORKDIR /app
@@ -336,6 +336,7 @@ start_node_docker() {
         bash -l -c "
             # Ensure PATH includes Nexus CLI
             export PATH=\"/root/.nexus:\$PATH\"
+            export PATH=\"/root/.nexus/bin:\$PATH\"
             
             # Source bashrc to get environment
             source ~/.bashrc 2>/dev/null || true
@@ -352,6 +353,7 @@ start_node_docker() {
                     echo 'Nexus CLI installed successfully'
                     source ~/.bashrc 2>/dev/null || true
                     export PATH=\"/root/.nexus:\$PATH\"
+                    export PATH=\"/root/.nexus/bin:\$PATH\"
                 else
                     echo 'Failed to install Nexus CLI'
                     exit 1
@@ -360,7 +362,7 @@ start_node_docker() {
                 # Verify installation
                 if ! command -v nexus-network &> /dev/null; then
                     echo 'Nexus CLI installation verification failed'
-                    ls -la /root/.nexus/ 2>/dev/null || echo 'No .nexus directory found'
+                    ls -la /root/.nexus/bin/ 2>/dev/null || echo 'No .nexus/bin directory found'
                     exit 1
                 fi
             fi
@@ -374,12 +376,11 @@ start_node_docker() {
             # Display environment info (hide credentials)
             echo \"Starting Nexus node \$NODE_ID\"
             echo \"Proxy: \$(echo \$PROXY_URL | sed 's|://[^@]*@|://***:***@|')\"
-            echo \"Max threads: \$MAX_THREADS\"
             echo \"Nexus CLI path: \$(which nexus-network 2>/dev/null || echo 'not found')\"
             echo \"Nexus version: \$(nexus-network --version 2>/dev/null || echo 'unknown')\"
             
-            # Start the node
-            exec nexus-network start --node-id \"\$NODE_ID\" --max-threads \"\$MAX_THREADS\" --headless
+            # Start the node with nexus-network command (no registration needed)
+            exec nexus-network start --node-id \"\$NODE_ID\" --headless
         " &
     
     # Wait a moment for container to start
