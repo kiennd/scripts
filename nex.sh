@@ -2,7 +2,7 @@
 
 # Complete Nexus Network Multi-Node Manager
 # Handles Docker installation, Nexus CLI installation, and isolated multi-node execution
-# Usage: sudo ./script.sh start "9000180:proxy1.com:8080:user1:pass1:100" "9000181:proxy2.com:8080:user2:pass2:100"
+# Usage: sudo ./script.sh start "9000180:proxy1.com:8080:user1:pass1"
 
 set -e  # Exit on any error
 
@@ -156,6 +156,12 @@ install_docker() {
                 systemctl unmask docker.socket
             fi
             
+            if systemctl status containerd 2>&1 | grep -q "masked"; then
+                print_status $YELLOW "Containerd service is masked, unmasking it..."
+                systemctl unmask containerd
+            fi
+            
+            systemctl start containerd
             systemctl start docker
             systemctl enable docker
         fi
@@ -164,101 +170,13 @@ install_docker() {
         return 0
     fi
     
-    # Detect OS
-    if [ -f /etc/os-release ]; then
-        source /etc/os-release
-        OS=$ID
-        VERSION=$VERSION_ID
-    else
-        print_status $RED "Cannot detect OS version"
-        exit 1
-    fi
-    
-    print_status $BLUE "Detected OS: $OS $VERSION"
-    
-    case "$OS" in
-        ubuntu|debian)
-            print_status $BLUE "Installing Docker on Ubuntu/Debian..."
-            
-            # Update package index
-            apt-get update
-            
-            # Install prerequisites
-            apt-get install -y \
-                ca-certificates \
-                curl \
-                gnupg \
-                lsb-release
-            
-            # Add Docker's official GPG key
-            mkdir -p /etc/apt/keyrings
-            curl -fsSL https://download.docker.com/linux/$OS/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-            
-            # Set up repository
-            echo \
-                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$OS \
-                $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-            
-            # Install Docker
-            apt-get update
-            apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-            ;;
-            
-        centos|rhel|fedora)
-            print_status $BLUE "Installing Docker on CentOS/RHEL/Fedora..."
-            
-            # Install prerequisites
-            if command -v dnf &> /dev/null; then
-                dnf install -y dnf-plugins-core
-                dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-                dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-            else
-                yum install -y yum-utils
-                yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-                yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-            fi
-            ;;
-            
-        *)
-            print_status $RED "Unsupported OS: $OS"
-            print_status $YELLOW "Please install Docker manually: https://docs.docker.com/engine/install/"
-            exit 1
-            ;;
-    esac
-    
-    # Start and enable Docker
-    # Check if Docker service or socket is masked and unmask them if needed
-    if systemctl status docker 2>&1 | grep -q "masked"; then
-        print_status $YELLOW "Docker service is masked, unmasking it..."
-        systemctl unmask docker
-    fi
-    
-    if systemctl status docker.socket 2>&1 | grep -q "masked"; then
-        print_status $YELLOW "Docker socket is masked, unmasking it..."
-        systemctl unmask docker.socket
-    fi
-    
-    systemctl start docker
-    systemctl enable docker
-    
-    # Test Docker installation
-    if docker --version && docker run --rm hello-world; then
-        print_status $GREEN "Docker installed and tested successfully!"
-    else
-        print_status $RED "Docker installation failed"
-        exit 1
-    fi
+    print_status $RED "Docker not found. Please install Docker first."
+    exit 1
 }
 
 # Function to create Nexus Docker image
 create_nexus_image() {
     local image_name="nexus-node:latest"
-    
-    # Check if image already exists and remove it to ensure fresh installation
-    if docker images | grep -q "nexus-node"; then
-        print_status $YELLOW "Removing existing Nexus Docker image to ensure fresh installation..."
-        docker rmi nexus-node:latest 2>/dev/null || true
-    fi
     
     print_status $BLUE "Creating Nexus Docker image..."
     
@@ -277,8 +195,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install Nexus CLI properly
 RUN curl -fsSL https://cli.nexus.xyz/ | bash \
-    && echo 'export PATH="/root/.nexus:$PATH"' >> ~/.bashrc \
-    && echo 'source ~/.bashrc' >> ~/.profile
+    && echo 'export PATH="/root/.nexus/bin:/root/.nexus:$PATH"' >> ~/.bashrc
 
 # Make nexus-network available in PATH  
 ENV PATH="/root/.nexus/bin:/root/.nexus:$PATH"
@@ -299,18 +216,17 @@ EOF
     fi
 }
 
-# Function to start a node in Docker with complete isolation
+# Function to start a node in Docker
 start_node_docker() {
     local node_id=$1
     local proxy_url=$2
     
     local container_name="nexus-node-${node_id}"
-    local log_file="${LOG_DIR}/node_${node_id}.log"
     
     # Extract proxy info for display (hide credentials)
     local proxy_display=$(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')
     
-    print_status $BLUE "Starting node $node_id in isolated Docker container..."
+    print_status $BLUE "Starting node $node_id in Docker container..."
     print_status $CYAN "  Node ID: $node_id"
     print_status $CYAN "  Proxy: $proxy_display"
     print_status $CYAN "  Container: $container_name"
@@ -319,128 +235,44 @@ start_node_docker() {
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true
     
-    # Start node in Docker with complete isolation
+    # Start node in Docker
     docker run -d \
         --name "$container_name" \
         --env NODE_ID="$node_id" \
         --env PROXY_URL="$proxy_url" \
         --restart unless-stopped \
-        --log-driver json-file \
-        --log-opt max-size=100m \
-        --log-opt max-file=3 \
         nexus-node:latest \
         bash -l -c "
-            # Ensure PATH includes Nexus CLI
-            export PATH=\"/root/.nexus:\$PATH\"
-            export PATH=\"/root/.nexus/bin:\$PATH\"
-            
-            # Source bashrc to get environment
-            source ~/.bashrc 2>/dev/null || true
-            
-            # Check if nexus-network is available
-            if ! command -v nexus-network &> /dev/null; then
-                echo 'Error: nexus-network not found, installing...'
-                
-                # Clear any proxy settings for installation
-                unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
-                
-                # Install Nexus CLI
-                if curl -fsSL https://cli.nexus.xyz/ | bash; then
-                    echo 'Nexus CLI installed successfully'
-                    source ~/.bashrc 2>/dev/null || true
-                    export PATH=\"/root/.nexus:\$PATH\"
-                    export PATH=\"/root/.nexus/bin:\$PATH\"
-                else
-                    echo 'Failed to install Nexus CLI'
-                    exit 1
-                fi
-                
-                # Verify installation - check multiple possible locations
-                echo 'Checking Nexus CLI installation...'
-                ls -la /root/.nexus/ 2>/dev/null || echo 'No .nexus directory found'
-                ls -la /root/.nexus/bin/ 2>/dev/null || echo 'No .nexus/bin directory found'
-                
-                # Try to find nexus-network in various locations
-                if command -v nexus-network &> /dev/null; then
-                    echo 'nexus-network found in PATH'
-                elif [ -f /root/.nexus/bin/nexus-network ]; then
-                    echo 'nexus-network found in /root/.nexus/bin/'
-                    export PATH=\"/root/.nexus/bin:\$PATH\"
-                elif [ -f /root/.nexus/nexus-network ]; then
-                    echo 'nexus-network found in /root/.nexus/'
-                    export PATH=\"/root/.nexus:\$PATH\"
-                else
-                    echo 'Searching for nexus-network...'
-                    find /root/.nexus -name '*nexus*' -type f 2>/dev/null || echo 'No nexus files found'
-                    echo 'Installation verification failed - nexus-network not found'
-                    exit 1
-                fi
-            fi
-            
-            # Now set proxy for Nexus network operations
+            # Set proxy for Nexus network operations
             export HTTP_PROXY=\"\$PROXY_URL\"
             export HTTPS_PROXY=\"\$PROXY_URL\"
             export http_proxy=\"\$PROXY_URL\"
             export https_proxy=\"\$PROXY_URL\"
             
-            # Final verification and path setup
-            echo \"Final PATH: \$PATH\"
-            echo \"Checking for nexus-network...\"
+            # Ensure PATH includes Nexus CLI
+            export PATH=\"/root/.nexus/bin:/root/.nexus:\$PATH\"
             
-            # Try different possible locations for nexus-network
-            if command -v nexus-network &> /dev/null; then
-                NEXUS_CMD=\"nexus-network\"
-            elif [ -f /root/.nexus/bin/nexus-network ]; then
-                NEXUS_CMD=\"/root/.nexus/bin/nexus-network\"
-            elif [ -f /root/.nexus/nexus-network ]; then
-                NEXUS_CMD=\"/root/.nexus/nexus-network\"
-            else
-                echo \"ERROR: Cannot find nexus-network command\"
-                find /root -name '*nexus*' -type f 2>/dev/null | head -10
-                exit 1
-            fi
+            # Source bashrc
+            source ~/.bashrc 2>/dev/null || true
             
-            # Display environment info (hide credentials)
+            # Display environment info
             echo \"Starting Nexus node \$NODE_ID\"
             echo \"Proxy: \$(echo \$PROXY_URL | sed 's|://[^@]*@|://***:***@|')\"
-            echo \"Nexus command: \$NEXUS_CMD\"
-            echo \"Nexus version: \$(\$NEXUS_CMD --version 2>/dev/null || echo 'unknown')\"
+            echo \"Nexus command: \$(which nexus-network 2>/dev/null || echo 'not found')\"
             
-            # Start the node with nexus-network command (no registration needed)
-            exec \$NEXUS_CMD start --node-id \"\$NODE_ID\" --headless
-        " &
+            # Start the node
+            exec nexus-network start --node-id \"\$NODE_ID\" --headless
+        "
     
-    # Wait a moment for container to start
     sleep 2
     
     # Check if container started successfully
     if docker ps | grep -q "$container_name"; then
-        local container_id=$(docker ps -q -f name="$container_name")
         print_status $GREEN "✓ Node $node_id started successfully"
-        print_status $BLUE "  Container ID: $container_id"
         print_status $BLUE "  View logs: docker logs -f $container_name"
-        
-        # Create a symbolic link to Docker logs
-        ln -sf "/var/lib/docker/containers/${container_id}/${container_id}-json.log" "$log_file" 2>/dev/null || true
     else
         print_status $RED "✗ Failed to start node $node_id"
         docker logs "$container_name" 2>/dev/null || true
-    fi
-}
-
-# Function to stop a node
-stop_node() {
-    local node_id=$1
-    local container_name="nexus-node-${node_id}"
-    
-    print_status $YELLOW "Stopping node $node_id..."
-    
-    if docker ps | grep -q "$container_name"; then
-        docker stop "$container_name"
-        docker rm "$container_name"
-        print_status $GREEN "✓ Node $node_id stopped"
-    else
-        print_status $YELLOW "Node $node_id was not running"
     fi
 }
 
@@ -448,13 +280,10 @@ stop_node() {
 start_all_nodes() {
     if [ ${#NODES[@]} -eq 0 ]; then
         print_status $RED "No nodes configured!"
-        print_status $YELLOW "Usage: $0 start \"node_id:host:port:user:pass\" [...]"
         exit 1
     fi
     
-    print_status $BLUE "=========================================="
     print_status $BLUE "Starting ${#NODES[@]} Nexus nodes in Docker..."
-    print_status $BLUE "=========================================="
     
     # Ensure Docker is installed and running
     install_docker
@@ -466,212 +295,10 @@ start_all_nodes() {
     for node_config in "${NODES[@]}"; do
         IFS='|' read -r node_id proxy_url <<< "$node_config"
         start_node_docker "$node_id" "$proxy_url"
-        sleep 3  # Small delay between starts
+        sleep 3
     done
     
-    print_status $GREEN "=========================================="
     print_status $GREEN "All nodes started successfully!"
-    print_status $GREEN "=========================================="
-    
-    show_status
-}
-
-# Function to stop all nodes
-stop_all_nodes() {
-    if [ ${#NODES[@]} -eq 0 ]; then
-        print_status $YELLOW "No nodes to stop"
-        return
-    fi
-    
-    print_status $BLUE "Stopping all Nexus nodes..."
-    
-    for node_config in "${NODES[@]}"; do
-        IFS='|' read -r node_id proxy_url <<< "$node_config"
-        stop_node "$node_id"
-    done
-    
-    print_status $GREEN "All nodes stopped!"
-}
-
-# Function to restart all nodes
-restart_all_nodes() {
-    print_status $BLUE "Restarting all Nexus nodes..."
-    stop_all_nodes
-    sleep 5
-    start_all_nodes
-}
-
-# Function to show status
-show_status() {
-    if [ ${#NODES[@]} -eq 0 ]; then
-        print_status $YELLOW "No nodes configured"
-        return
-    fi
-    
-    print_status $BLUE "Nexus Network Nodes Status:"
-    echo "=============================================================================="
-    printf "%-10s %-20s %-50s %-10s\n" "NODE ID" "STATUS" "PROXY" "UPTIME"
-    echo "------------------------------------------------------------------------------"
-    
-    for node_config in "${NODES[@]}"; do
-        IFS='|' read -r node_id proxy_url <<< "$node_config"
-        local container_name="nexus-node-${node_id}"
-        
-        # Hide credentials in proxy display
-        local proxy_display=$(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')
-        
-        if docker ps | grep -q "$container_name"; then
-            local status="${GREEN}RUNNING${NC}"
-            local uptime=$(docker ps --format "table {{.Status}}" -f name="$container_name" | tail -n +2)
-        else
-            local status="${RED}STOPPED${NC}"
-            local uptime="N/A"
-        fi
-        
-        printf "%-10s %-30s %-50s %-10s\n" "$node_id" "$status" "$proxy_display" "$uptime"
-    done
-    
-    echo "=============================================================================="
-    print_status $BLUE "Commands:"
-    print_status $BLUE "  View logs: $0 logs [node_id]"
-    print_status $BLUE "  Stop all:  $0 stop"
-}
-
-# Function to show logs
-show_logs() {
-    local node_id=$1
-    
-    if [ -z "$node_id" ]; then
-        print_status $BLUE "Showing logs for all nodes (Ctrl+C to exit)..."
-        
-        for node_config in "${NODES[@]}"; do
-            IFS='|' read -r nid proxy_url <<< "$node_config"
-            local container_name="nexus-node-${nid}"
-            if docker ps | grep -q "$container_name"; then
-                echo "=== Node $nid ==="
-                docker logs --tail=10 "$container_name" 2>/dev/null | sed "s/^/[$nid] /" &
-            fi
-        done
-        wait
-    else
-        local container_name="nexus-node-${node_id}"
-        if docker ps | grep -q "$container_name"; then
-            print_status $BLUE "Showing logs for node $node_id (Ctrl+C to exit)..."
-            docker logs -f "$container_name"
-        else
-            print_status $RED "Node $node_id is not running"
-        fi
-    fi
-}
-
-# Function to test proxy connectivity
-test_proxies() {
-    if [ ${#NODES[@]} -eq 0 ]; then
-        print_status $YELLOW "No nodes configured to test"
-        return
-    fi
-    
-    print_status $BLUE "Testing proxy connectivity..."
-    
-    for node_config in "${NODES[@]}"; do
-        IFS='|' read -r node_id proxy_url <<< "$node_config"
-        
-        local proxy_display=$(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')
-        print_status $BLUE "Testing proxy for node $node_id: $proxy_display"
-        
-        # Test using a temporary container
-        if timeout 30 docker run --rm \
-            --env HTTP_PROXY="$proxy_url" \
-            --env HTTPS_PROXY="$proxy_url" \
-            ubuntu:22.04 \
-            bash -c "apt-get update -qq && apt-get install -y curl -qq && curl -s --proxy $proxy_url https://httpbin.org/ip" > /dev/null 2>&1; then
-            print_status $GREEN "✓ Proxy for node $node_id is working"
-        else
-            print_status $RED "✗ Proxy for node $node_id is not working or timed out"
-        fi
-    done
-}
-
-# Function to clean up
-cleanup() {
-    print_status $BLUE "Cleaning up..."
-    
-    # Stop all nodes
-    stop_all_nodes
-    
-    # Remove Nexus image
-    if docker images | grep -q "nexus-node"; then
-        print_status $BLUE "Removing Nexus Docker image..."
-        docker rmi nexus-node:latest 2>/dev/null || true
-    fi
-    
-    # Clean old logs
-    find "$LOG_DIR" -name "*.log" -mtime +7 -delete 2>/dev/null || true
-    
-    print_status $GREEN "Cleanup completed!"
-}
-
-# Function to show help
-show_help() {
-    cat << EOF
-Nexus Network Multi-Node Manager - Complete Docker Solution
-===========================================================
-
-This script provides complete automation for running multiple Nexus nodes
-with different proxy configurations using Docker for complete isolation.
-
-PROXY FORMAT: host:port:user:pass
-
-Usage: sudo $0 COMMAND [NODE_CONFIGS...]
-
-Commands:
-  start [configs...]  - Install Docker, Nexus CLI, and start nodes with given configs
-  stop                - Stop all running nodes
-  restart [configs...]- Restart all nodes with new configs
-  status              - Show status of all nodes
-  logs [node_id]      - Show logs for specific node (or all if no ID)
-  test                - Test proxy connectivity for all configured nodes
-  cleanup             - Stop all nodes and clean up Docker resources
-  help                - Show this help message
-
-Node Configuration Format:
-  node_id:host:port:user:pass
-
-Examples:
-  # Start single node
-  sudo $0 start "9000180:proxy1.com:8080:user1:pass1"
-  
-  # Start multiple nodes
-  sudo $0 start \\
-    "9000180:proxy1.com:8080:user1:pass1" \\
-    "9000181:proxy2.com:8080:user2:pass2" \\
-    "9000182:proxy3.com:8080:user3:pass3"
-  
-  # Check status and logs
-  sudo $0 status
-  sudo $0 logs 9000180
-  sudo $0 test
-  
-  # Stop and cleanup
-  sudo $0 stop
-  sudo $0 cleanup
-
-Features:
-  ✓ Automatic Docker installation on Ubuntu/Debian/CentOS/RHEL/Fedora
-  ✓ Automatic Nexus CLI installation in containers
-  ✓ Complete process isolation per node
-  ✓ Individual proxy configuration per node with authentication
-  ✓ Persistent containers with restart policies
-  ✓ Comprehensive logging and monitoring
-  ✓ Credential masking in status display
-  ✓ Easy management and cleanup
-
-Security:
-  ✓ Proxy credentials are hidden in status displays
-  ✓ Each node runs in isolated container environment
-  ✓ No credential exposure in process lists
-
-EOF
 }
 
 # Main execution
@@ -686,32 +313,8 @@ main() {
             check_root
             start_all_nodes
             ;;
-        stop)
-            stop_all_nodes
-            ;;
-        restart)
-            check_root
-            restart_all_nodes
-            ;;
-        status)
-            show_status
-            ;;
-        logs)
-            show_logs "$2"
-            ;;
-        test)
-            test_proxies
-            ;;
-        cleanup)
-            cleanup
-            ;;
-        help|--help|-h)
-            show_help
-            ;;
         *)
-            print_status $RED "Unknown command: $command"
-            echo ""
-            show_help
+            echo "Usage: $0 start \"node_id:host:port:user:pass\""
             exit 1
             ;;
     esac
