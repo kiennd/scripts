@@ -29,7 +29,7 @@ PID_DIR="${SCRIPT_DIR}/pids"
 CONFIG_DIR="${SCRIPT_DIR}/config"
 
 # Batch configuration
-BATCH_SIZE=6  # Default batch size
+BATCH_SIZE=10  # Default batch size
 BATCH_TIMEOUT=30  # Default timeout in seconds (2 minutes)
 INFINITE_LOOP=true  # Whether to loop infinitely through all nodes
 
