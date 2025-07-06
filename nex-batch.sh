@@ -95,13 +95,58 @@ load_nodes_from_args() {
         if [ $# -eq 0 ]; then
             print_status $RED "No node configurations provided!"
             print_status $YELLOW "Usage: $0 start \"node_id:host:port:user:pass\" [...]"
-            print_status $YELLOW "Example: $0 start \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\""
+            print_status $YELLOW "Usage: $0 batch \"node_id:host:port:user:pass\" [...] [batch_size] [timeout]"
+            print_status $YELLOW "Usage: $0 batch-loop \"node_id:host:port:user:pass\" [...] [batch_size] [timeout]"
+            print_status $YELLOW "Example: $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\" 5 45"
             exit 1
         fi
         
-        print_status $BLUE "Parsing node configurations..."
+        # Store all arguments
+        local all_args=("$@")
+        local node_configs=()
         
-        for node_config in "$@"; do
+        # Check for batch size and timeout at the end for batch commands
+        if [[ "$command" == "batch" || "$command" == "batch-loop" ]]; then
+            local last_arg="${all_args[-1]}"
+            local second_last_arg="${all_args[-2]}"
+            
+            # Check if last argument is a number (timeout)
+            if [[ "$last_arg" =~ ^[0-9]+$ ]] && [ ${#all_args[@]} -gt 1 ]; then
+                # Check if second-to-last is also a number (batch size)
+                if [[ "$second_last_arg" =~ ^[0-9]+$ ]] && [ ${#all_args[@]} -gt 2 ]; then
+                    BATCH_SIZE=$second_last_arg
+                    BATCH_TIMEOUT=$last_arg
+                    print_status $GREEN "Using batch size: $BATCH_SIZE"
+                    print_status $GREEN "Using batch timeout: ${BATCH_TIMEOUT}s"
+                    # Remove last two arguments (batch size and timeout)
+                    node_configs=("${all_args[@]:0:$((${#all_args[@]}-2))}")
+                else
+                    # Only timeout provided
+                    BATCH_TIMEOUT=$last_arg
+                    print_status $GREEN "Using batch timeout: ${BATCH_TIMEOUT}s"
+                    print_status $BLUE "Using default batch size: $BATCH_SIZE"
+                    # Remove last argument (timeout)
+                    node_configs=("${all_args[@]:0:$((${#all_args[@]}-1))}")
+                fi
+            else
+                # No numeric arguments at the end, use all as node configs
+                node_configs=("${all_args[@]}")
+                print_status $BLUE "Using default batch size: $BATCH_SIZE"
+                print_status $BLUE "Using default batch timeout: ${BATCH_TIMEOUT}s"
+            fi
+        else
+            # For start/restart commands, all arguments are node configs
+            node_configs=("${all_args[@]}")
+        fi
+        
+        if [ ${#node_configs[@]} -eq 0 ]; then
+            print_status $RED "No node configurations found after parsing parameters!"
+            exit 1
+        fi
+        
+        print_status $BLUE "Parsing ${#node_configs[@]} node configurations..."
+        
+        for node_config in "${node_configs[@]}"; do
             if parsed_config=$(parse_node_config "$node_config"); then
                 NODES+=("$parsed_config")
                 IFS='|' read -r node_id proxy_url <<< "$parsed_config"
@@ -813,24 +858,28 @@ show_help() {
     echo "Nexus Network Multi-Node Manager with Batch Processing"
     echo ""
     echo "Usage:"
-    echo "  $0 start \"node_id:host:port:user:pass\" [...]        - Start all nodes continuously"
-    echo "  $0 batch \"node_id:host:port:user:pass\" [...]        - Run nodes in batches once with timeout"
-    echo "  $0 batch-loop \"node_id:host:port:user:pass\" [...]   - Run nodes in batches INFINITELY"
-    echo "  $0 batch-config [batch_size] [timeout_seconds]       - Configure batch settings"
-    echo "  $0 cleanup                                            - Stop and remove all containers"
-    echo "  $0 help                                               - Show this help"
+    echo "  $0 start \"node_id:host:port:user:pass\" [...]                               - Start all nodes continuously"
+    echo "  $0 batch \"node_id:host:port:user:pass\" [...] [batch_size] [timeout]        - Run nodes in batches once"
+    echo "  $0 batch-loop \"node_id:host:port:user:pass\" [...] [batch_size] [timeout]   - Run nodes in batches INFINITELY"
+    echo "  $0 cleanup                                                                   - Stop all containers"
+    echo "  $0 help                                                                      - Show this help"
+    echo ""
+    echo "Parameters (optional, at end of command):"
+    echo "  batch_size  - Number of nodes per batch (default: $BATCH_SIZE)"
+    echo "  timeout     - Batch timeout in seconds (default: $BATCH_TIMEOUT)"
     echo ""
     echo "Examples:"
     echo "  $0 start \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\""
-    echo "  $0 batch \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\""
-    echo "  $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\""
-    echo "  $0 batch-config 3 180                               # 3 nodes per batch, 3 minutes timeout"
+    echo "  $0 batch \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\" 5 60"
+    echo "  $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\" 8 45"
+    echo "  $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\" 10"
+    echo "  $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\"                        # Uses defaults ($BATCH_SIZE nodes, ${BATCH_TIMEOUT}s)"
     echo ""
     echo "Batch Modes:"
     echo "  batch      - Run through all nodes once, then stop"
     echo "  batch-loop - Keep cycling through all nodes forever (Press Ctrl+C to stop)"
     echo ""
-    echo "Current Configuration:"
+    echo "Current Default Configuration:"
     echo "  Batch size: $BATCH_SIZE nodes"
     echo "  Batch timeout: ${BATCH_TIMEOUT}s ($(($BATCH_TIMEOUT/60)) minutes)"
     echo "  Infinite loop: $INFINITE_LOOP"
@@ -861,19 +910,7 @@ main() {
             load_nodes_from_args "$@"
             run_batch_mode
             ;;
-        batch-config)
-            if [ -n "$2" ] && [[ "$2" =~ ^[0-9]+$ ]]; then
-                BATCH_SIZE=$2
-                print_status $GREEN "Batch size set to: $BATCH_SIZE"
-            fi
-            if [ -n "$3" ] && [[ "$3" =~ ^[0-9]+$ ]]; then
-                BATCH_TIMEOUT=$3
-                print_status $GREEN "Batch timeout set to: ${BATCH_TIMEOUT}s ($(($BATCH_TIMEOUT/60)) minutes)"
-            fi
-            print_status $BLUE "Current configuration:"
-            print_status $BLUE "  Batch size: $BATCH_SIZE nodes"
-            print_status $BLUE "  Batch timeout: ${BATCH_TIMEOUT}s ($(($BATCH_TIMEOUT/60)) minutes)"
-            ;;
+
         cleanup)
             check_root
             cleanup_all_containers
