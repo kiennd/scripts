@@ -59,14 +59,29 @@ print_status() {
 parse_node_config() {
     local node_config="$1"
     
-    # Expected format: node_id:host:port:user:pass
-    IFS=':' read -r node_id proxy_host proxy_port proxy_user proxy_pass <<< "$node_config"
+    # Count colons to determine format
+    local colon_count=$(echo "$node_config" | tr -cd ':' | wc -c)
+    
+    if [ $colon_count -eq 4 ]; then
+        # Old format: node_id:host:port:user:pass
+        IFS=':' read -r node_id proxy_host proxy_port proxy_user proxy_pass <<< "$node_config"
+        local container_name="$node_id"
+    elif [ $colon_count -eq 5 ]; then
+        # New format: node_id:host:port:user:pass:container_name
+        IFS=':' read -r node_id proxy_host proxy_port proxy_user proxy_pass container_name <<< "$node_config"
+    else
+        print_status $RED "Invalid node configuration: $node_config"
+        print_status $YELLOW "Expected format: node_id:host:port:user:pass[:container_name]"
+        print_status $YELLOW "Example: 9000180:proxy1.com:8080:user1:pass1"
+        print_status $YELLOW "Example: 9000180:proxy1.com:8080:user1:pass1:my-custom-name"
+        return 1
+    fi
     
     # Validate required fields
     if [[ -z "$node_id" || -z "$proxy_host" || -z "$proxy_port" || -z "$proxy_user" || -z "$proxy_pass" ]]; then
         print_status $RED "Invalid node configuration: $node_config"
-        print_status $YELLOW "Expected format: node_id:host:port:user:pass"
-        print_status $YELLOW "Example: 9000180:proxy1.com:8080:user1:pass1"
+        print_status $YELLOW "Expected format: node_id:host:port:user:pass[:container_name]"
+        print_status $YELLOW "Example: 9000180:proxy1.com:8080:user1:pass1:my-custom-name"
         return 1
     fi
     
@@ -77,10 +92,15 @@ parse_node_config() {
         return 1
     fi
     
+    # Use node_id as container name if not provided
+    if [[ -z "$container_name" ]]; then
+        container_name="$node_id"
+    fi
+    
     # Construct proxy URL with authentication
     local proxy_url="http://${proxy_user}:${proxy_pass}@${proxy_host}:${proxy_port}"
     
-    echo "$node_id|$proxy_url"
+    echo "$node_id|$proxy_url|$container_name"
 }
 
 # Function to load nodes from command line arguments
@@ -94,10 +114,10 @@ load_nodes_from_args() {
     if [[ "$command" == "start" || "$command" == "restart" || "$command" == "batch" || "$command" == "batch-loop" ]]; then
         if [ $# -eq 0 ]; then
             print_status $RED "No node configurations provided!"
-            print_status $YELLOW "Usage: $0 start \"node_id:host:port:user:pass\" [...]"
-            print_status $YELLOW "Usage: $0 batch \"node_id:host:port:user:pass\" [...] [batch_size] [timeout]"
-            print_status $YELLOW "Usage: $0 batch-loop \"node_id:host:port:user:pass\" [...] [batch_size] [timeout]"
-            print_status $YELLOW "Example: $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\" 5 45"
+            print_status $YELLOW "Usage: $0 start \"node_id:host:port:user:pass[:container_name]\" [...]"
+            print_status $YELLOW "Usage: $0 batch \"node_id:host:port:user:pass[:container_name]\" [...] [batch_size] [timeout]"
+            print_status $YELLOW "Usage: $0 batch-loop \"node_id:host:port:user:pass[:container_name]\" [...] [batch_size] [timeout]"
+            print_status $YELLOW "Example: $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1:custom-name\" \"9000181:proxy2.com:8080:user2:pass2\" 5 45"
             exit 1
         fi
         
@@ -149,8 +169,8 @@ load_nodes_from_args() {
         for node_config in "${node_configs[@]}"; do
             if parsed_config=$(parse_node_config "$node_config"); then
                 NODES+=("$parsed_config")
-                IFS='|' read -r node_id proxy_url <<< "$parsed_config"
-                print_status $GREEN "✓ Parsed node $node_id with proxy $(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')"
+                IFS='|' read -r node_id proxy_url container_name <<< "$parsed_config"
+                print_status $GREEN "✓ Parsed node $node_id with proxy $(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|') → container: $container_name"
             else
                 exit 1
             fi
@@ -162,7 +182,8 @@ load_nodes_from_args() {
         if [ ${#NODES[@]} -gt 0 ]; then
             print_status $BLUE "All loaded nodes:"
             for i in $(seq 0 $((${#NODES[@]} - 1))); do
-                print_status $CYAN "  Node[$i]: ${NODES[$i]}"
+                IFS='|' read -r node_id proxy_url container_name <<< "${NODES[$i]}"
+                print_status $CYAN "  Node[$i]: $node_id → $container_name"
             done
         fi
     else
@@ -374,8 +395,9 @@ EOF
 start_node_docker() {
     local node_id=$1
     local proxy_url=$2
+    local custom_container_name=$3
     
-    local container_name="nexus-node-${node_id}"
+    local container_name="nexus-node-${custom_container_name}"
     
     # Extract proxy info for display (hide credentials)
     local proxy_display=$(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')
@@ -457,13 +479,13 @@ start_batch_nodes() {
     # Start all containers concurrently
     for i in "${!batch_nodes[@]}"; do
         local node_config="${batch_nodes[$i]}"
-        IFS='|' read -r node_id proxy_url <<< "$node_config"
+        IFS='|' read -r node_id proxy_url container_name <<< "$node_config"
         
-        print_status $CYAN "Launching node $node_id..."
+        print_status $CYAN "Launching node $node_id (container: $container_name)..."
         
         # Start container in background and capture result
         (
-            if start_node_docker "$node_id" "$proxy_url"; then
+            if start_node_docker "$node_id" "$proxy_url" "$container_name"; then
                 echo "SUCCESS:$node_id" > "$temp_dir/result_$i"
             else
                 echo "FAILED:$node_id" > "$temp_dir/result_$i"
@@ -533,19 +555,19 @@ run_batch_mode() {
     print_status $PURPLE "Batch timeout: ${BATCH_TIMEOUT}s ($(($BATCH_TIMEOUT/60)) minutes)"
     print_status $PURPLE "=========================================="
     
-    # Debug: Show first few nodes
-    if [ ${#NODES[@]} -gt 0 ]; then
-        print_status $BLUE "First few nodes to process:"
-        for i in $(seq 0 $((${#NODES[@]} < 3 ? ${#NODES[@]} - 1 : 2))); do
-            local node_config="${NODES[$i]}"
-            IFS='|' read -r node_id proxy_url <<< "$node_config"
-            local proxy_display=$(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')
-            print_status $CYAN "  [$i] Node $node_id (Proxy: $proxy_display)"
-        done
-    else
-        print_status $RED "ERROR: NODES array is empty!"
-        return 1
-    fi
+            # Debug: Show first few nodes
+        if [ ${#NODES[@]} -gt 0 ]; then
+            print_status $BLUE "First few nodes to process:"
+            for i in $(seq 0 $((${#NODES[@]} < 3 ? ${#NODES[@]} - 1 : 2))); do
+                local node_config="${NODES[$i]}"
+                IFS='|' read -r node_id proxy_url container_name <<< "$node_config"
+                local proxy_display=$(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')
+                print_status $CYAN "  [$i] Node $node_id → $container_name (Proxy: $proxy_display)"
+            done
+        else
+            print_status $RED "ERROR: NODES array is empty!"
+            return 1
+        fi
     
     # Ensure Docker is installed and running
     install_docker
@@ -628,9 +650,9 @@ run_batch_mode() {
             # Display batch info
             print_status $CYAN "Batch $display_batch_num contains ${#current_batch[@]} nodes:"
             for node_config in "${current_batch[@]}"; do
-                IFS='|' read -r node_id proxy_url <<< "$node_config"
+                IFS='|' read -r node_id proxy_url container_name <<< "$node_config"
                 local proxy_display=$(echo "$proxy_url" | sed 's|://[^@]*@|://***:***@|')
-                print_status $CYAN "  - Node $node_id (Proxy: $proxy_display)"
+                print_status $CYAN "  - Node $node_id → $container_name (Proxy: $proxy_display)"
             done
             
             # Check if we have any nodes in the batch
@@ -715,8 +737,8 @@ start_all_nodes() {
     
     # Start each node
     for node_config in "${NODES[@]}"; do
-        IFS='|' read -r node_id proxy_url <<< "$node_config"
-        start_node_docker "$node_id" "$proxy_url"
+        IFS='|' read -r node_id proxy_url container_name <<< "$node_config"
+        start_node_docker "$node_id" "$proxy_url" "$container_name"
         sleep 3
     done
     
@@ -842,12 +864,12 @@ show_all_logs() {
     print_status $BLUE "Showing initial logs for all running containers..."
     
     for node_config in "${NODES[@]}"; do
-        IFS='|' read -r node_id proxy_url <<< "$node_config"
-        local container_name="nexus-node-${node_id}"
+        IFS='|' read -r node_id proxy_url container_name <<< "$node_config"
+        local full_container_name="nexus-node-${container_name}"
         
-        if docker ps | grep -q "$container_name"; then
-            print_status $CYAN "=== Initial logs for Node $node_id ==="
-            docker logs --tail=10 "$container_name" 2>/dev/null || echo "No logs available"
+        if docker ps | grep -q "$full_container_name"; then
+            print_status $CYAN "=== Initial logs for Node $node_id ($container_name) ==="
+            docker logs --tail=10 "$full_container_name" 2>/dev/null || echo "No logs available"
             echo ""
         fi
     done
@@ -858,11 +880,15 @@ show_help() {
     echo "Nexus Network Multi-Node Manager with Batch Processing"
     echo ""
     echo "Usage:"
-    echo "  $0 start \"node_id:host:port:user:pass\" [...]                               - Start all nodes continuously"
-    echo "  $0 batch \"node_id:host:port:user:pass\" [...] [batch_size] [timeout]        - Run nodes in batches once"
-    echo "  $0 batch-loop \"node_id:host:port:user:pass\" [...] [batch_size] [timeout]   - Run nodes in batches INFINITELY"
-    echo "  $0 cleanup                                                                   - Stop all containers"
-    echo "  $0 help                                                                      - Show this help"
+    echo "  $0 start \"node_id:host:port:user:pass[:container_name]\" [...]                               - Start all nodes continuously"
+    echo "  $0 batch \"node_id:host:port:user:pass[:container_name]\" [...] [batch_size] [timeout]        - Run nodes in batches once"
+    echo "  $0 batch-loop \"node_id:host:port:user:pass[:container_name]\" [...] [batch_size] [timeout]   - Run nodes in batches INFINITELY"
+    echo "  $0 cleanup                                                                                    - Stop all containers"
+    echo "  $0 help                                                                                       - Show this help"
+    echo ""
+    echo "Node Configuration Format:"
+    echo "  node_id:host:port:user:pass            - Uses node_id as container name"
+    echo "  node_id:host:port:user:pass:name       - Uses custom container name"
     echo ""
     echo "Parameters (optional, at end of command):"
     echo "  batch_size  - Number of nodes per batch (default: $BATCH_SIZE)"
@@ -870,10 +896,10 @@ show_help() {
     echo ""
     echo "Examples:"
     echo "  $0 start \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\""
-    echo "  $0 batch \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\" 5 60"
-    echo "  $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\" 8 45"
+    echo "  $0 batch \"9000180:proxy1.com:8080:user1:pass1:web1\" \"9000181:proxy2.com:8080:user2:pass2:web2\" 5 60"
+    echo "  $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1:custom\" \"9000181:proxy2.com:8080:user2:pass2\" 8 45"
     echo "  $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\" \"9000181:proxy2.com:8080:user2:pass2\" 10"
-    echo "  $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\"                        # Uses defaults ($BATCH_SIZE nodes, ${BATCH_TIMEOUT}s)"
+    echo "  $0 batch-loop \"9000180:proxy1.com:8080:user1:pass1\"                                         # Uses defaults"
     echo ""
     echo "Batch Modes:"
     echo "  batch      - Run through all nodes once, then stop"
