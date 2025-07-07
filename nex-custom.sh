@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Complete Nexus Network Multi-Node Manager
-# Handles Docker installation, Nexus CLI installation, and multi-node execution with proxy file
-# Usage: sudo ./script.sh start "12952655,12981890,13014998" "/path/to/proxies.txt"
+# Handles Docker installation, Nexus CLI installation, and multi-node execution with proxy URL
+# Usage: sudo ./script.sh start "12952655,12981890,13014998" "https://proxy.webshare.io/api/v2/proxy/list/download/..."
 
 set -e  # Exit on any error
 
@@ -17,6 +17,7 @@ mkdir -p "$LOG_DIR" "$PID_DIR" "$CONFIG_DIR"
 
 # Global variables
 NODE_IDS=()
+PROXY_SOURCE=""
 PROXY_FILE=""
 MAX_THREADS=50
 
@@ -67,36 +68,115 @@ parse_node_ids() {
     return 0
 }
 
-# Function to validate proxy file
-validate_proxy_file() {
-    local proxy_path="$1"
+# Function to download and convert proxy list
+download_and_convert_proxies() {
+    local proxy_source="$1"
+    local temp_raw_file="${CONFIG_DIR}/proxies_raw.txt"
+    local converted_file="${CONFIG_DIR}/proxies_converted.txt"
     
-    if [ -z "$proxy_path" ]; then
-        print_status $RED "Proxy file path not provided!"
-        return 1
-    fi
+    print_status $BLUE "Downloading proxy list from URL..."
     
-    if [ ! -f "$proxy_path" ]; then
-        print_status $RED "Proxy file not found: $proxy_path"
-        return 1
-    fi
-    
-    if [ ! -r "$proxy_path" ]; then
-        print_status $RED "Proxy file not readable: $proxy_path"
+    # Download the proxy list
+    if curl -fsSL "$proxy_source" -o "$temp_raw_file"; then
+        local proxy_count=$(wc -l < "$temp_raw_file" 2>/dev/null || echo "0")
+        print_status $GREEN "✓ Downloaded $proxy_count proxies from URL"
+    else
+        print_status $RED "Failed to download proxy list from: $proxy_source"
         return 1
     fi
     
     # Check if file has content
-    if [ ! -s "$proxy_path" ]; then
-        print_status $RED "Proxy file is empty: $proxy_path"
+    if [ ! -s "$temp_raw_file" ]; then
+        print_status $RED "Downloaded proxy file is empty"
         return 1
     fi
     
-    local proxy_count=$(wc -l < "$proxy_path")
-    print_status $GREEN "✓ Proxy file validated: $proxy_path ($proxy_count proxies)"
+    print_status $BLUE "Converting proxy format..."
     
-    PROXY_FILE="$proxy_path"
+    # Convert from IP:PORT:USERNAME:PASSWORD to http://USERNAME:PASSWORD@IP:PORT
+    > "$converted_file"  # Clear the file
+    
+    local converted_count=0
+    while IFS=':' read -r ip port username password || [ -n "$ip" ]; do
+        # Skip empty lines
+        if [[ -n "$ip" && -n "$port" && -n "$username" && -n "$password" ]]; then
+            # Remove any trailing whitespace/newlines
+            ip=$(echo "$ip" | tr -d '\r\n ')
+            port=$(echo "$port" | tr -d '\r\n ')
+            username=$(echo "$username" | tr -d '\r\n ')
+            password=$(echo "$password" | tr -d '\r\n ')
+            
+            # Validate IP and port format
+            if [[ "$port" =~ ^[0-9]+$ ]]; then
+                echo "http://${username}:${password}@${ip}:${port}" >> "$converted_file"
+                ((converted_count++))
+            fi
+        fi
+    done < "$temp_raw_file"
+    
+    if [ "$converted_count" -eq 0 ]; then
+        print_status $RED "No valid proxies found in the downloaded file"
+        print_status $YELLOW "Expected format: IP:PORT:USERNAME:PASSWORD"
+        return 1
+    fi
+    
+    print_status $GREEN "✓ Converted $converted_count proxies to proper format"
+    
+    # Show sample of converted proxies (hide credentials)
+    print_status $CYAN "Sample converted proxies:"
+    head -3 "$converted_file" | sed 's|://[^@]*@|://***:***@|' | while read -r line; do
+        print_status $CYAN "  $line"
+    done
+    
+    PROXY_FILE="$converted_file"
+    
+    # Clean up raw file
+    rm -f "$temp_raw_file"
+    
     return 0
+}
+
+# Function to validate proxy source (URL or file path)
+validate_proxy_source() {
+    local proxy_source="$1"
+    
+    if [ -z "$proxy_source" ]; then
+        print_status $RED "Proxy source not provided!"
+        return 1
+    fi
+    
+    PROXY_SOURCE="$proxy_source"
+    
+    # Check if it's a URL
+    if [[ "$proxy_source" =~ ^https?:// ]]; then
+        print_status $BLUE "Detected proxy URL, will download and convert..."
+        return $(download_and_convert_proxies "$proxy_source")
+    else
+        # Treat as file path
+        print_status $BLUE "Detected file path, validating..."
+        
+        if [ ! -f "$proxy_source" ]; then
+            print_status $RED "Proxy file not found: $proxy_source"
+            return 1
+        fi
+        
+        if [ ! -r "$proxy_source" ]; then
+            print_status $RED "Proxy file not readable: $proxy_source"
+            return 1
+        fi
+        
+        # Check if file has content
+        if [ ! -s "$proxy_source" ]; then
+            print_status $RED "Proxy file is empty: $proxy_source"
+            return 1
+        fi
+        
+        local proxy_count=$(wc -l < "$proxy_source")
+        print_status $GREEN "✓ Local proxy file validated: $proxy_source ($proxy_count proxies)"
+        
+        PROXY_FILE="$proxy_source"
+        return 0
+    fi
 }
 
 # Function to load configuration from command line arguments
@@ -107,13 +187,15 @@ load_config_from_args() {
     if [[ "$command" == "start" || "$command" == "restart" ]]; then
         if [ $# -lt 2 ]; then
             print_status $RED "Insufficient arguments provided!"
-            print_status $YELLOW "Usage: $0 start \"node_id1,node_id2,node_id3\" \"/path/to/proxies.txt\" [max_threads]"
-            print_status $YELLOW "Example: $0 start \"12952655,12981890,13014998\" \"/root/nexus-cli/proxies.txt\" 50"
+            print_status $YELLOW "Usage: $0 start \"node_id1,node_id2,node_id3\" \"proxy_url_or_file_path\" [max_threads]"
+            print_status $YELLOW "Examples:"
+            print_status $YELLOW "  $0 start \"12952655,12981890,13014998\" \"https://proxy.webshare.io/api/v2/proxy/list/download/xyz...\""
+            print_status $YELLOW "  $0 start \"12952655,12981890\" \"/home/user/proxies.txt\" 25"
             exit 1
         fi
         
         local node_ids_string="$1"
-        local proxy_file_path="$2"
+        local proxy_source="$2"
         local max_threads="${3:-50}"
         
         print_status $BLUE "Parsing configuration..."
@@ -123,8 +205,8 @@ load_config_from_args() {
             exit 1
         fi
         
-        # Validate proxy file
-        if ! validate_proxy_file "$proxy_file_path"; then
+        # Validate proxy source (URL or file)
+        if ! validate_proxy_source "$proxy_source"; then
             exit 1
         fi
         
@@ -139,6 +221,7 @@ load_config_from_args() {
         
         print_status $BLUE "Configuration loaded successfully:"
         print_status $CYAN "  Node count: ${#NODE_IDS[@]}"
+        print_status $CYAN "  Proxy source: $PROXY_SOURCE"
         print_status $CYAN "  Proxy file: $PROXY_FILE"
         print_status $CYAN "  Max threads: $MAX_THREADS"
     fi
@@ -277,8 +360,8 @@ start_nexus_docker() {
             echo \"Proxy file: /app/proxies.txt\"
             echo \"Max threads: $MAX_THREADS\"
             echo \"Nexus command: \$(which nexus-network 2>/dev/null || echo 'not found')\"
-            echo \"Proxy file content (first 5 lines):\"
-            head -5 /app/proxies.txt 2>/dev/null || echo 'Cannot read proxy file'
+            echo \"Proxy file content (first 5 lines, credentials hidden):\"
+            head -5 /app/proxies.txt 2>/dev/null | sed 's|://[^@]*@|://***:***@|' || echo 'Cannot read proxy file'
             echo \"\"
             echo \"Starting nodes...\"
             
@@ -391,20 +474,28 @@ show_help() {
     echo "Nexus Network Multi-Node Manager"
     echo ""
     echo "Usage:"
-    echo "  $0 start \"node_id1,node_id2,...\" \"/path/to/proxies.txt\" [max_threads]"
+    echo "  $0 start \"node_id1,node_id2,...\" \"proxy_url_or_file_path\" [max_threads]"
     echo "  $0 stop"
     echo "  $0 status"
     echo "  $0 logs"
     echo ""
     echo "Commands:"
-    echo "  start   - Start Nexus nodes with specified IDs and proxy file"
+    echo "  start   - Start Nexus nodes with specified IDs and proxy source"
     echo "  stop    - Stop all running containers"
     echo "  status  - Show container status"
     echo "  logs    - Show live logs"
     echo ""
     echo "Examples:"
-    echo "  $0 start \"12952655,12981890,13014998\" \"/root/nexus-cli/proxies.txt\""
+    echo "  # Using proxy download URL"
+    echo "  $0 start \"12952655,12981890,13014998\" \"https://proxy.webshare.io/api/v2/proxy/list/download/xyz...\""
+    echo "  "
+    echo "  # Using local proxy file"
     echo "  $0 start \"12952655,12981890\" \"/home/user/proxies.txt\" 25"
+    echo ""
+    echo "Proxy URL Format:"
+    echo "  The script supports downloading from URLs that return proxy lists in format:"
+    echo "  IP:PORT:USERNAME:PASSWORD (one per line)"
+    echo "  These will be automatically converted to: http://USERNAME:PASSWORD@IP:PORT"
     echo ""
     echo "Note: This script requires root privileges for Docker operations."
 }
