@@ -252,18 +252,30 @@ create_nexus_image() {
     cat > "${CONFIG_DIR}/Dockerfile" << 'EOF'
 FROM ubuntu:22.04
 
-# Install dependencies
+# Install dependencies including Rust and Git
 RUN apt-get update && apt-get install -y \
     curl \
     bash \
     ca-certificates \
     wget \
     unzip \
+    git \
+    build-essential \
+    pkg-config \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Nexus CLI properly
-RUN curl -fsSL https://raw.githubusercontent.com/kiennd/scripts/refs/heads/main/install.sh | bash \
-    && echo 'export PATH="/root/.nexus/bin:/root/.nexus:$PATH"' >> ~/.bashrc
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:$PATH"
+
+# Clone and build Nexus CLI from source
+RUN git clone https://github.com/kkkkkkog/nexus-cli.git /root/nexus-cli \
+    && cd /root/nexus-cli/clients/cli \
+    && /root/.cargo/bin/cargo build --release \
+    && mkdir -p /root/.nexus/bin \
+    && cp target/release/nexus-network /root/.nexus/bin/ \
+    && chmod +x /root/.nexus/bin/nexus-network
 
 # Make nexus-network available in PATH  
 ENV PATH="/root/.nexus/bin:/root/.nexus:$PATH"
