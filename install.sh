@@ -128,7 +128,7 @@ esac
 # -----------------------------------------------------------------------------
 # 5) Download latest release binary
 # -----------------------------------------------------------------------------
-LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/nexus-xyz/nexus-cli/releases/latest |
+LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/kkkkkkog/nexus-cli/releases/latest |
     grep "browser_download_url" |
     grep "$BINARY_NAME\"" |       # Match exact file name (not .sha256)
     cut -d '"' -f 4)
