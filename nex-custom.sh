@@ -286,7 +286,7 @@ EOF
 
 # Function to start Nexus nodes in Docker
 start_nexus_docker() {
-    local max_nodes_per_container=25
+    local max_nodes_per_container=20
     local total_nodes=${#NODE_IDS[@]}
     local total_containers=$(( (total_nodes + max_nodes_per_container - 1) / max_nodes_per_container ))
     
