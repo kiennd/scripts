@@ -286,66 +286,98 @@ EOF
 
 # Function to start Nexus nodes in Docker
 start_nexus_docker() {
-    local container_name="nexus-multi-node"
+    local max_nodes_per_container=10
+    local total_nodes=${#NODE_IDS[@]}
+    local total_containers=$(( (total_nodes + max_nodes_per_container - 1) / max_nodes_per_container ))
     
-    print_status $BLUE "Starting Nexus multi-node container..."
-    print_status $CYAN "  Node IDs: ${NODE_IDS[*]}"
+    print_status $BLUE "Starting Nexus multi-node containers..."
+    print_status $CYAN "  Total nodes: $total_nodes"
+    print_status $CYAN "  Max nodes per container: $max_nodes_per_container"
+    print_status $CYAN "  Total containers needed: $total_containers"
     print_status $CYAN "  Proxy file: $PROXY_FILE"
     print_status $CYAN "  Max threads: $MAX_THREADS"
-    print_status $CYAN "  Container: $container_name"
     
-    # Stop and remove existing container if running
-    docker stop "$container_name" 2>/dev/null || true
-    docker rm "$container_name" 2>/dev/null || true
-    
-    # Build the nexus-network command with multiple node IDs
-    local nexus_command="nexus-network start"
-    for node_id in "${NODE_IDS[@]}"; do
-        nexus_command="$nexus_command --node-id $node_id"
+    # Stop and remove any existing containers
+    for i in $(seq 1 20); do  # Clean up to 20 containers
+        local container_name="nexus-multi-node-$i"
+        docker stop "$container_name" 2>/dev/null || true
+        docker rm "$container_name" 2>/dev/null || true
     done
-    nexus_command="$nexus_command --max-threads $MAX_THREADS --headless --proxy '/app/proxies.txt'"
     
-    print_status $CYAN "  Command: $nexus_command"
+    # Create containers for each group of nodes
+    for container_index in $(seq 1 $total_containers); do
+        local container_name="nexus-multi-node-$container_index"
+        local start_idx=$(( (container_index - 1) * max_nodes_per_container ))
+        local end_idx=$(( start_idx + max_nodes_per_container - 1 ))
+        
+        # Get subset of node IDs for this container
+        local container_nodes=()
+        for i in $(seq $start_idx $end_idx); do
+            if [ $i -lt $total_nodes ]; then
+                container_nodes+=("${NODE_IDS[$i]}")
+            fi
+        done
+        
+        if [ ${#container_nodes[@]} -eq 0 ]; then
+            break
+        fi
+        
+        print_status $BLUE "Starting container $container_index/$total_containers..."
+        print_status $CYAN "  Container: $container_name"
+        print_status $CYAN "  Node IDs: ${container_nodes[*]}"
+        print_status $CYAN "  Node count: ${#container_nodes[@]}"
+        
+        # Build the nexus-network command with node IDs for this container
+        local nexus_command="nexus-network start"
+        for node_id in "${container_nodes[@]}"; do
+            nexus_command="$nexus_command --node-id $node_id"
+        done
+        nexus_command="$nexus_command --max-threads $MAX_THREADS --headless --proxy '/app/proxies.txt'"
+        
+        print_status $CYAN "  Command: $nexus_command"
+        
+        # Start container with proxy file mounted
+        docker run -d \
+            --name "$container_name" \
+            --volume "$PROXY_FILE:/app/proxies.txt:ro" \
+            --restart unless-stopped \
+            nexus-node:latest \
+            bash -l -c "
+                # Ensure PATH includes Nexus CLI
+                export PATH=\"/root/.nexus/bin:/root/.nexus:\$PATH\"
+                
+                # Source bashrc
+                source ~/.bashrc 2>/dev/null || true
+                
+                # Display environment info
+                echo \"Starting Nexus container $container_index/$total_containers\"
+                echo \"Container: $container_name\"
+                echo \"Node IDs: ${container_nodes[*]}\"
+                echo \"Node count: ${#container_nodes[@]}\"
+                echo \"Proxy file: /app/proxies.txt\"
+                echo \"Max threads: $MAX_THREADS\"
+                echo \"Nexus command: \$(which nexus-network 2>/dev/null || echo 'not found')\"
+                echo \"\"
+                echo \"Starting nodes...\"
+                
+                # Start the nodes
+                exec $nexus_command
+            "
+        
+        sleep 2
+        
+        # Check if container started successfully
+        if docker ps | grep -q "$container_name"; then
+            print_status $GREEN "✓ Container $container_index started successfully ($container_name)"
+        else
+            print_status $RED "✗ Failed to start container $container_index ($container_name)"
+            docker logs "$container_name" 2>/dev/null || true
+        fi
+    done
     
-    # Start container with proxy file mounted
-    docker run -d \
-        --name "$container_name" \
-        --volume "$PROXY_FILE:/app/proxies.txt:ro" \
-        --restart unless-stopped \
-        nexus-node:latest \
-        bash -l -c "
-            # Ensure PATH includes Nexus CLI
-            export PATH=\"/root/.nexus/bin:/root/.nexus:\$PATH\"
-            
-            # Source bashrc
-            source ~/.bashrc 2>/dev/null || true
-            
-            # Display environment info
-            echo \"Starting Nexus multi-node setup\"
-            echo \"Node IDs: ${NODE_IDS[*]}\"
-            echo \"Proxy file: /app/proxies.txt\"
-            echo \"Max threads: $MAX_THREADS\"
-            echo \"Nexus command: \$(which nexus-network 2>/dev/null || echo 'not found')\"
-            echo \"Proxy file content (first 5 lines, credentials hidden):\"
-            head -5 /app/proxies.txt 2>/dev/null | sed 's|://[^@]*@|://***:***@|' || echo 'Cannot read proxy file'
-            echo \"\"
-            echo \"Starting nodes...\"
-            
-            # Start the nodes
-            exec $nexus_command
-        "
-    
-    sleep 3
-    
-    # Check if container started successfully
-    if docker ps | grep -q "$container_name"; then
-        print_status $GREEN "✓ Nexus multi-node container started successfully"
-        print_status $BLUE "  View logs: docker logs -f $container_name"
-    else
-        print_status $RED "✗ Failed to start Nexus multi-node container"
-        docker logs "$container_name" 2>/dev/null || true
-        exit 1
-    fi
+    print_status $GREEN "All containers started successfully!"
+    print_status $BLUE "Container summary:"
+    docker ps --filter "name=nexus-multi-node-" --format "table {{.Names}}\t{{.Status}}\t{{.CreatedAt}}"
 }
 
 # Function to start all nodes
@@ -379,20 +411,33 @@ start_all_nodes() {
 
 # Function to show logs
 show_logs() {
-    local container_name="nexus-multi-node"
+    local containers=$(docker ps --filter "name=nexus-multi-node-" --format "{{.Names}}" 2>/dev/null | sort)
     
-    if docker ps | grep -q "$container_name"; then
-        print_status $BLUE "Showing initial logs..."
-        print_status $CYAN "=== Initial logs for Nexus multi-node ==="
-        docker logs --tail=20 "$container_name" 2>/dev/null || echo "No logs available"
+    if [ -z "$containers" ]; then
+        print_status $RED "No Nexus containers running!"
+        exit 1
+    fi
+    
+    print_status $BLUE "Available containers:"
+    local count=1
+    for container in $containers; do
+        print_status $CYAN "  $count. $container"
+        ((count++))
+    done
+    
+    # Show logs for the first container by default
+    local first_container=$(echo "$containers" | head -1)
+    
+    if [ -n "$first_container" ]; then
+        print_status $BLUE "Showing initial logs for $first_container..."
+        print_status $CYAN "=== Initial logs for $first_container ==="
+        docker logs --tail=20 "$first_container" 2>/dev/null || echo "No logs available"
         echo ""
         
-        print_status $GREEN "Following live logs (Press Ctrl+C to exit)..."
+        print_status $GREEN "Following live logs for $first_container (Press Ctrl+C to exit)..."
+        print_status $YELLOW "To view other containers: docker logs -f <container_name>"
         echo "=================================================================="
-        docker logs -f "$container_name"
-    else
-        print_status $RED "Container not running!"
-        exit 1
+        docker logs -f "$first_container"
     fi
 }
 
@@ -400,10 +445,15 @@ show_logs() {
 stop_all() {
     print_status $BLUE "Stopping Nexus containers..."
     
-    # Stop multi-node container
-    if docker ps | grep -q "nexus-multi-node"; then
-        docker stop "nexus-multi-node"
-        print_status $GREEN "✓ Stopped nexus-multi-node container"
+    # Stop multi-node containers
+    local containers=$(docker ps --filter "name=nexus-multi-node-" --format "{{.Names}}" 2>/dev/null || true)
+    if [ -n "$containers" ]; then
+        for container in $containers; do
+            docker stop "$container"
+            print_status $GREEN "✓ Stopped $container"
+        done
+    else
+        print_status $YELLOW "No running Nexus containers found"
     fi
     
     # Stop any old single-node containers
@@ -420,11 +470,22 @@ stop_all() {
 show_status() {
     print_status $BLUE "Checking container status..."
     
-    if docker ps | grep -q "nexus-multi-node"; then
-        print_status $GREEN "✓ nexus-multi-node container is running"
-        docker ps --filter "name=nexus-multi-node" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    local containers=$(docker ps -a --filter "name=nexus-multi-node-" --format "{{.Names}}" 2>/dev/null || true)
+    if [ -n "$containers" ]; then
+        local running_count=$(docker ps --filter "name=nexus-multi-node-" --format "{{.Names}}" | wc -l)
+        local total_count=$(echo "$containers" | wc -l)
+        
+        print_status $GREEN "✓ Found $total_count Nexus containers ($running_count running)"
+        docker ps -a --filter "name=nexus-multi-node-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+        
+        # Show node distribution
+        print_status $BLUE "Node distribution per container:"
+        for container in $(docker ps --filter "name=nexus-multi-node-" --format "{{.Names}}" | sort); do
+            local node_count=$(docker logs "$container" 2>/dev/null | grep "Node IDs:" | tail -1 | sed 's/.*Node IDs: //' | wc -w)
+            print_status $CYAN "  $container: $node_count nodes"
+        done
     else
-        print_status $YELLOW "nexus-multi-node container is not running"
+        print_status $YELLOW "No Nexus containers found"
     fi
     
     # Check for old containers
