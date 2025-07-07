@@ -68,17 +68,16 @@ parse_node_ids() {
     return 0
 }
 
-# Function to download and convert proxy list
-download_and_convert_proxies() {
+# Function to download proxy list
+download_proxies() {
     local proxy_source="$1"
-    local temp_raw_file="${CONFIG_DIR}/proxies_raw.txt"
-    local converted_file="${CONFIG_DIR}/proxies_converted.txt"
+    local proxy_file="${CONFIG_DIR}/proxies.txt"
     
     print_status $BLUE "Downloading proxy list from URL..."
     
-    # Download the proxy list
-    if curl -fsSL "$proxy_source" -o "$temp_raw_file"; then
-        local proxy_count=$(wc -l < "$temp_raw_file" 2>/dev/null || echo "0")
+    # Download the proxy list directly
+    if curl -fsSL "$proxy_source" -o "$proxy_file"; then
+        local proxy_count=$(wc -l < "$proxy_file" 2>/dev/null || echo "0")
         print_status $GREEN "✓ Downloaded $proxy_count proxies from URL"
     else
         print_status $RED "Failed to download proxy list from: $proxy_source"
@@ -86,52 +85,18 @@ download_and_convert_proxies() {
     fi
     
     # Check if file has content
-    if [ ! -s "$temp_raw_file" ]; then
+    if [ ! -s "$proxy_file" ]; then
         print_status $RED "Downloaded proxy file is empty"
         return 1
     fi
     
-    print_status $BLUE "Converting proxy format..."
-    
-    # Convert from IP:PORT:USERNAME:PASSWORD to http://USERNAME:PASSWORD@IP:PORT
-    > "$converted_file"  # Clear the file
-    
-    local converted_count=0
-    while IFS=':' read -r ip port username password || [ -n "$ip" ]; do
-        # Skip empty lines
-        if [[ -n "$ip" && -n "$port" && -n "$username" && -n "$password" ]]; then
-            # Remove any trailing whitespace/newlines
-            ip=$(echo "$ip" | tr -d '\r\n ')
-            port=$(echo "$port" | tr -d '\r\n ')
-            username=$(echo "$username" | tr -d '\r\n ')
-            password=$(echo "$password" | tr -d '\r\n ')
-            
-            # Validate IP and port format
-            if [[ "$port" =~ ^[0-9]+$ ]]; then
-                echo "http://${username}:${password}@${ip}:${port}" >> "$converted_file"
-                ((converted_count++))
-            fi
-        fi
-    done < "$temp_raw_file"
-    
-    if [ "$converted_count" -eq 0 ]; then
-        print_status $RED "No valid proxies found in the downloaded file"
-        print_status $YELLOW "Expected format: IP:PORT:USERNAME:PASSWORD"
-        return 1
-    fi
-    
-    print_status $GREEN "✓ Converted $converted_count proxies to proper format"
-    
-    # Show sample of converted proxies (hide credentials)
-    print_status $CYAN "Sample converted proxies:"
-    head -3 "$converted_file" | sed 's|://[^@]*@|://***:***@|' | while read -r line; do
+    # Show sample of proxies (hide credentials for security)
+    print_status $CYAN "Sample proxies (first 3 lines):"
+    head -3 "$proxy_file" | sed 's|://[^@]*@|://***:***@|g' | while read -r line; do
         print_status $CYAN "  $line"
     done
     
-    PROXY_FILE="$converted_file"
-    
-    # Clean up raw file
-    rm -f "$temp_raw_file"
+    PROXY_FILE="$proxy_file"
     
     return 0
 }
@@ -149,8 +114,9 @@ validate_proxy_source() {
     
     # Check if it's a URL
     if [[ "$proxy_source" =~ ^https?:// ]]; then
-        print_status $BLUE "Detected proxy URL, will download and convert..."
-        return $(download_and_convert_proxies "$proxy_source")
+        print_status $BLUE "Detected proxy URL, will download..."
+        download_proxies "$proxy_source"
+        return $?
     else
         # Treat as file path
         print_status $BLUE "Detected file path, validating..."
@@ -493,9 +459,8 @@ show_help() {
     echo "  $0 start \"12952655,12981890\" \"/home/user/proxies.txt\" 25"
     echo ""
     echo "Proxy URL Format:"
-    echo "  The script supports downloading from URLs that return proxy lists in format:"
-    echo "  IP:PORT:USERNAME:PASSWORD (one per line)"
-    echo "  These will be automatically converted to: http://USERNAME:PASSWORD@IP:PORT"
+    echo "  The script supports downloading from URLs that return proxy lists"
+    echo "  in the correct format (one proxy per line)"
     echo ""
     echo "Note: This script requires root privileges for Docker operations."
 }
