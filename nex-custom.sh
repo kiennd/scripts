@@ -20,6 +20,7 @@ NODE_IDS=()
 PROXY_SOURCE=""
 PROXY_FILE=""
 MAX_THREADS=50
+MAX_NODES_PER_CONTAINER=20
 
 # Colors for output
 RED='\033[0;31m'
@@ -153,16 +154,18 @@ load_config_from_args() {
     if [[ "$command" == "start" || "$command" == "restart" ]]; then
         if [ $# -lt 2 ]; then
             print_status $RED "Insufficient arguments provided!"
-            print_status $YELLOW "Usage: $0 start \"node_id1,node_id2,node_id3\" \"proxy_url_or_file_path\" [max_threads]"
+            print_status $YELLOW "Usage: $0 start \"node_id1,node_id2,node_id3\" \"proxy_url_or_file_path\" [max_threads] [max_nodes_per_container]"
             print_status $YELLOW "Examples:"
             print_status $YELLOW "  $0 start \"12952655,12981890,13014998\" \"https://proxy.webshare.io/api/v2/proxy/list/download/xyz...\""
             print_status $YELLOW "  $0 start \"12952655,12981890\" \"/home/user/proxies.txt\" 25"
+            print_status $YELLOW "  $0 start \"12952655,12981890,13014998\" \"https://proxy.webshare.io/api/v2/proxy/list/download/xyz...\" 50 10"
             exit 1
         fi
         
         local node_ids_string="$1"
         local proxy_source="$2"
         local max_threads="${3:-50}"
+        local max_nodes_per_container="${4:-20}"
         
         print_status $BLUE "Parsing configuration..."
         
@@ -185,11 +188,21 @@ load_config_from_args() {
             MAX_THREADS=50
         fi
         
+        # Validate max nodes per container
+        if [[ "$max_nodes_per_container" =~ ^[0-9]+$ ]] && [ "$max_nodes_per_container" -gt 0 ]; then
+            MAX_NODES_PER_CONTAINER="$max_nodes_per_container"
+            print_status $GREEN "✓ Max nodes per container set to: $MAX_NODES_PER_CONTAINER"
+        else
+            print_status $YELLOW "Invalid max_nodes_per_container value, using default: 20"
+            MAX_NODES_PER_CONTAINER=20
+        fi
+        
         print_status $BLUE "Configuration loaded successfully:"
         print_status $CYAN "  Node count: ${#NODE_IDS[@]}"
         print_status $CYAN "  Proxy source: $PROXY_SOURCE"
         print_status $CYAN "  Proxy file: $PROXY_FILE"
         print_status $CYAN "  Max threads: $MAX_THREADS"
+        print_status $CYAN "  Max nodes per container: $MAX_NODES_PER_CONTAINER"
     fi
 }
 
@@ -286,7 +299,7 @@ EOF
 
 # Function to start Nexus nodes in Docker
 start_nexus_docker() {
-    local max_nodes_per_container=20
+    local max_nodes_per_container=$MAX_NODES_PER_CONTAINER
     local total_nodes=${#NODE_IDS[@]}
     local total_containers=$(( (total_nodes + max_nodes_per_container - 1) / max_nodes_per_container ))
     
@@ -501,7 +514,7 @@ show_help() {
     echo "Nexus Network Multi-Node Manager"
     echo ""
     echo "Usage:"
-    echo "  $0 start \"node_id1,node_id2,...\" \"proxy_url_or_file_path\" [max_threads]"
+    echo "  $0 start \"node_id1,node_id2,...\" \"proxy_url_or_file_path\" [max_threads] [max_nodes_per_container]"
     echo "  $0 stop"
     echo "  $0 status"
     echo "  $0 logs"
@@ -513,11 +526,14 @@ show_help() {
     echo "  logs    - Show live logs"
     echo ""
     echo "Examples:"
-    echo "  # Using proxy download URL"
+    echo "  # Using proxy download URL (default: 50 threads, 20 nodes per container)"
     echo "  $0 start \"12952655,12981890,13014998\" \"https://proxy.webshare.io/api/v2/proxy/list/download/xyz...\""
     echo "  "
-    echo "  # Using local proxy file"
-    echo "  $0 start \"12952655,12981890\" \"/home/user/proxies.txt\" 25"
+    echo "  # Using local proxy file with custom settings"
+    echo "  $0 start \"12952655,12981890\" \"/home/user/proxies.txt\" 25 10"
+    echo "  "
+    echo "  # 100 nodes with 10 nodes per container = 10 containers"
+    echo "  $0 start \"node1,node2,...node100\" \"proxy_url\" 50 10"
     echo ""
     echo "Proxy URL Format:"
     echo "  The script supports downloading from URLs that return proxy lists"
