@@ -22,106 +22,16 @@ echo "${GREEN}Testnet III is now live!${NC}"
 echo ""
 
 # -----------------------------------------------------------------------------
-# 3) Determine the platform and architecture
+# 3) Download Nexus CLI binary
 # -----------------------------------------------------------------------------
-case "$(uname -s)" in
-    Linux*)
-        PLATFORM="linux"
-        case "$(uname -m)" in
-            x86_64)
-                ARCH="x86_64"
-                BINARY_NAME="nexus-network-linux-x86_64"
-                ;;
-            aarch64|arm64)
-                ARCH="arm64"
-                BINARY_NAME="nexus-network-linux-arm64"
-                ;;
-            *)
-                echo "${RED}Unsupported architecture: $(uname -m)${NC}"
-                echo "Please build from source:"
-                echo "  git clone https://github.com/kkkkkkog/nexus-cli.git"
-                echo "  cd nexus-cli/clients/cli"
-                echo "  cargo build --release"
-                exit 1
-                ;;
-        esac
-        ;;
-    Darwin*)
-        PLATFORM="macos"
-        case "$(uname -m)" in
-            x86_64)
-                ARCH="x86_64"
-                BINARY_NAME="nexus-network-macos-x86_64"
-                echo "${ORANGE}Note: You are running on an Intel Mac.${NC}"
-                ;;
-            arm64)
-                ARCH="arm64"
-                BINARY_NAME="nexus-network-macos-arm64"
-                echo "${ORANGE}Note: You are running on an Apple Silicon Mac (M1/M2/M3).${NC}"
-                ;;
-            *)
-                echo "${RED}Unsupported architecture: $(uname -m)${NC}"
-                echo "Please build from source:"
-                echo "  git clone https://github.com/kkkkkkog/nexus-cli.git"
-                echo "  cd nexus-cli/clients/cli"
-                echo "  cargo build --release"
-                exit 1
-                ;;
-        esac
-        ;;
-    MINGW*|MSYS*|CYGWIN*)
-        PLATFORM="windows"
-        case "$(uname -m)" in
-            x86_64)
-                ARCH="x86_64"
-                BINARY_NAME="nexus-network-windows-x86_64.exe"
-                ;;
-            *)
-                echo "${RED}Unsupported architecture: $(uname -m)${NC}"
-                echo "Please build from source:"
-                echo "  git clone https://github.com/kkkkkkog/nexus-cli.git"
-                echo "  cd nexus-cli/clients/cli"
-                echo "  cargo build --release"
-                exit 1
-                ;;
-        esac
-        ;;
-    *)
-        echo "${RED}Unsupported platform: $(uname -s)${NC}"
-        echo "Please build from source:"
-        echo "  git clone https://github.com/kkkkkkog/nexus-cli.git"
-        echo "  cd nexus-cli/clients/cli"
-        echo "  cargo build --release"
-        exit 1
-        ;;
-esac
-
-# -----------------------------------------------------------------------------
-# 4) Download latest release binary
-# -----------------------------------------------------------------------------
-LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/kkkkkkog/nexus-cli/releases/latest |
-    grep "browser_download_url" |
-    grep "$BINARY_NAME\"" |       # Match exact file name (not .sha256)
-    head -1 |                     # Take first match
-    cut -d '"' -f 4)
-
-if [ -z "$LATEST_RELEASE_URL" ]; then
-    echo "${RED}Could not find a precompiled binary for $PLATFORM-$ARCH${NC}"
-    echo "Please build from source:"
-    echo "  git clone https://github.com/kkkkkkog/nexus-cli.git"
-    echo "  cd nexus-cli/clients/cli"
-    echo "  cargo build --release"
-    exit 1
-fi
-
-echo "Downloading latest release for $PLATFORM-$ARCH..."
-curl -L -o "$BIN_DIR/nexus-network" "$LATEST_RELEASE_URL"
+echo "Downloading Nexus CLI binary..."
+curl -L -o "$BIN_DIR/nexus-network" "https://github.com/kkkkkkog/nexus-cli/releases/download/v0.9.0-g/nexus-network-linux-x86_64"
 chmod +x "$BIN_DIR/nexus-network"
 ln -s "$BIN_DIR/nexus-network" "$BIN_DIR/nexus-cli"
 chmod +x "$BIN_DIR/nexus-cli"
 
 # -----------------------------------------------------------------------------
-# 5) Add $BIN_DIR to PATH if not already present
+# 4) Add $BIN_DIR to PATH if not already present
 # -----------------------------------------------------------------------------
 case "$SHELL" in
     */bash)
