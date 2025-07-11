@@ -15,43 +15,14 @@ NC='\033[0m'  # No Color
 [ -d "$BIN_DIR" ] || mkdir -p "$BIN_DIR"
 
 # -----------------------------------------------------------------------------
-# 2) Display a message if we're interactive (NONINTERACTIVE is not set) and the
-#    $NODE_ID is not a 28-character ID. This is for Testnet II info.
+# 2) Display a message about Testnet III
 # -----------------------------------------------------------------------------
-if [ -z "$NONINTERACTIVE" ] && [ "${#NODE_ID}" -ne "28" ]; then
-    echo ""
-    echo "${GREEN}Testnet III is now live!${NC}"
-    echo ""
-fi
+echo ""
+echo "${GREEN}Testnet III is now live!${NC}"
+echo ""
 
 # -----------------------------------------------------------------------------
-# 3) Prompt the user to agree to the Nexus Beta Terms of Use if we're in an
-#    interactive mode (i.e., NONINTERACTIVE is not set) and no config.json file exists.
-#    We explicitly read from /dev/tty to ensure user input is requested from the
-#    terminal rather than the script's standard input.
-# -----------------------------------------------------------------------------
-while [ -z "$NONINTERACTIVE" ] && [ ! -f "$NEXUS_HOME/config.json" ]; do
-    read -p "Do you agree to the Nexus Beta Terms of Use (https://nexus.xyz/terms-of-use)? (Y/n) " yn </dev/tty
-    echo ""
-
-    case $yn in
-        [Nn]* )
-            echo ""
-            exit;;
-        [Yy]* )
-            echo ""
-            break;;
-        "" )
-            echo ""
-            break;;
-        * )
-            echo "Please answer yes or no."
-            echo "";;
-    esac
-done
-
-# -----------------------------------------------------------------------------
-# 4) Determine the platform and architecture
+# 3) Determine the platform and architecture
 # -----------------------------------------------------------------------------
 case "$(uname -s)" in
     Linux*)
@@ -126,11 +97,12 @@ case "$(uname -s)" in
 esac
 
 # -----------------------------------------------------------------------------
-# 5) Download latest release binary
+# 4) Download latest release binary
 # -----------------------------------------------------------------------------
 LATEST_RELEASE_URL=$(curl -s https://api.github.com/repos/kkkkkkog/nexus-cli/releases/latest |
     grep "browser_download_url" |
     grep "$BINARY_NAME\"" |       # Match exact file name (not .sha256)
+    head -1 |                     # Take first match
     cut -d '"' -f 4)
 
 if [ -z "$LATEST_RELEASE_URL" ]; then
@@ -149,7 +121,7 @@ ln -s "$BIN_DIR/nexus-network" "$BIN_DIR/nexus-cli"
 chmod +x "$BIN_DIR/nexus-cli"
 
 # -----------------------------------------------------------------------------
-# 6) Add $BIN_DIR to PATH if not already present
+# 5) Add $BIN_DIR to PATH if not already present
 # -----------------------------------------------------------------------------
 case "$SHELL" in
     */bash)
