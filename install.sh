@@ -25,7 +25,7 @@ echo ""
 # 3) Download Nexus CLI binary
 # -----------------------------------------------------------------------------
 echo "Downloading Nexus CLI binary..."
-curl -L -o "$BIN_DIR/nexus-network" "https://github.com/kkkkkkog/nexus-cli/releases/download/v0.9.0-g/nexus-network-linux-x86_64"
+curl -L -o "$BIN_DIR/nexus-network" "https://github.com/kkkkkkog/nexus-cli/releases/download/v0.9.6-a/nexus-network-0.9.6-a-linux-x86_64"
 chmod +x "$BIN_DIR/nexus-network"
 ln -s "$BIN_DIR/nexus-network" "$BIN_DIR/nexus-cli"
 chmod +x "$BIN_DIR/nexus-cli"
