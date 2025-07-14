@@ -258,7 +258,7 @@ install_docker() {
 # Function to create Nexus Docker image
 create_nexus_image() {
     local image_name="nexus-node:latest"
-    docker system prune -af
+    # docker system prune -af
     
     print_status $BLUE "Creating Nexus Docker image..."
     
